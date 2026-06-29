@@ -169,18 +169,19 @@ async def telegram_service_handler(event):
     except Exception:
         pass
 
-# ⚡ [ULTRA OPTIMIZED REGISTRATION]
+# ⚡ [ULTRA OPTIMIZED REGISTRATION] - ပြန်ပြင်ထားသော အပိုင်း
 def register_userbot_handlers(client, waifu_chat_id):
     """ Telegram Gateway အဆင့်မှာတင် မသက်ဆိုင်တဲ့စာတွေကို Filter ချပစ်လိုက်ခြင်းဖြင့် RAM/CPU ကို အများဆုံးသက်သာစေသည် """
     # ၁။ Spawn ပတ်သက်သမျှကို Spawn Bot ဆီကစာပဲ လက်ခံမယ် (လူတွေပြောသမျှစာ လုံးဝဝင်မလာပါ)
     client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
-    client.add_event_handler(catch_success_forwarder_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) 
+    client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) # 👈 ဒီစာသားကို အမှန်ပြင်လိုက်ပါပြီ
     
     # ၂။ Hint Solver ကို မိမိရဲ့ သီးသန့် Waifu Chat တစ်ခုတည်းက စာပဲ ဝင်ဖတ်ခိုင်းမယ်
     client.add_event_handler(hint_solver_handler, events.NewMessage(chats=waifu_chat_id))
     
     # ၃။ Telegram Official Service စာသားများအတွက်သာ
     client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
+
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
