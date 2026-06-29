@@ -89,7 +89,7 @@ async def spawn_detector_handler(event):
         
         # 🎯 ပြင်ဆင်ချက်: Standard ASCII ရော၊ Unicode Small Caps ဖောင့်ကိုပါ တိုက်စစ်သည်
         if "A CHARACTER HAS SPAWNED" in text_upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw:
-            if event.chat_id in [-1001947407821, -1003067509601, -1003760110058]:
+            if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
                 return  
                 
             if any(emoji in text_raw for emoji in config["ignored_emojis"]):
