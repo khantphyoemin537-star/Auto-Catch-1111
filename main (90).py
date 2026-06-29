@@ -82,8 +82,8 @@ async def spawn_detector_handler(event):
     if config["is_stopped"]:
         return  
 
-    if event.text and "A CHARACTER HAS SPAWNED IN THE CHAT!" in event.text.upper():
-        if event.chat_id in [-1001947407821, -1003067509601]:
+    if event.text and "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text.upper():
+        if event.chat_id in [-1001947407821, -1003067509601, -1003760110058]:
             return  
             
         if any(emoji in event.text for emoji in config["ignored_emojis"]):
@@ -99,7 +99,7 @@ async def spawn_detector_handler(event):
             spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
             spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
             
-            if len(spawn_tracker) > 300:
+            if len(spawn_tracker) > 100:
                 spawn_tracker.pop(next(iter(spawn_tracker)))
         except Exception as e:
             print(f"❌ Forward Error on Userbot {current_user_id}: {e}")
@@ -127,7 +127,7 @@ async def hint_solver_handler(event):
                 
                 try:
                     client_to_use = config["client"]
-                    delay_time = random.uniform(0.5, 0.6) 
+                    delay_time = random.uniform(0.7, 0.9) 
                     async with client_to_use.action(target_orig_group, 'typing'):
                         await asyncio.sleep(delay_time)
                         
@@ -142,7 +142,7 @@ async def catch_success_forwarder_handler(event):
     if not current_user_id or userbot_instances.get(current_user_id, {}).get("is_stopped"):
         return
         
-    if event.text and (" can be ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text):
+    if event.text and ("ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text):
         try:
             me = await event.client.get_me()
             first_name = me.first_name.lower() if me.first_name else ""
