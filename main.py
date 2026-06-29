@@ -21,9 +21,10 @@ SPECIFIC_GROUP = -1003848067679  # Log Group
 SPAWN_BOT_ID = 6157455819
 
 # 🎯 GLOBAL RUNTIME STORAGE
-userbot_instances = {}        # { user_id: { "client": client, "group_id": waifu_chat_id, "ignored_emojis": [...], "is_stopped": bool, "collection_name": str } }
+userbot_instances = {}        
 hint_bot_ids = {8506436817}   
 spawn_tracker = {}            # { (user_id, fwd_msg_id): orig_chat_id }
+latest_spawn = {}             # { user_id: orig_chat_id } -> Reply မပါရင် သုံးရန် Fallback Tracker
 HINT_REGEX = re.compile(r"(/catch\s+[^\n]+)") 
 
 # MongoDB Setup
@@ -71,8 +72,8 @@ async def delete_catch_message_delayed(client, chat_id, msg_id):
 # ⚔️ DYNAMIC USERBOT EVENT HANDLERS (HIGH OPTIMIZED)
 # ==========================================
 async def spawn_detector_handler(event):
-    """ Built-in Filter ကြောင့် ဤနေရာသို့ Spawn Bot ပို့သော စာများသာ ရောက်လာမည် (လူပြောသမျှစာများ လုံးဝမလာပါ) """
-    global spawn_tracker
+    """ Spawn Bot ဆီက စာသားများကို ဖောင့်စတိုင်မျိုးစုံ စစ်ဆေးပေးသည် """
+    global spawn_tracker, latest_spawn
     
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -82,31 +83,41 @@ async def spawn_detector_handler(event):
     if config["is_stopped"]:
         return  
 
-    if event.text and "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ ɪɴ ᴛʜᴇ ᴄʜᴀᴛ!" in event.text.upper():
-        if event.chat_id in [-1001947407821, -1003067509601, -1003760110058]:
-            return  
-            
-        if any(emoji in event.text for emoji in config["ignored_emojis"]):
-            return  
-
-        orig_chat_id = event.chat_id  
-        waifu_chat_id = config["group_id"] 
+    if event.text:
+        text_raw = event.text
+        text_upper = text_raw.upper()
         
-        try:
-            fwd_msg = await event.message.forward_to(waifu_chat_id)
-            reply_msg = await fwd_msg.reply("/waifu")
+        # 🎯 ပြင်ဆင်ချက်: Standard ASCII ရော၊ Unicode Small Caps ဖောင့်ကိုပါ တိုက်စစ်သည်
+        if "A CHARACTER HAS SPAWNED" in text_upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw:
+            if event.chat_id in [-1001947407821, -1003067509601, -1003760110058]:
+                return  
+                
+            if any(emoji in text_raw for emoji in config["ignored_emojis"]):
+                return  
+
+            orig_chat_id = event.chat_id  
+            waifu_chat_id = config["group_id"] 
             
-            spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
-            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+            # နောက်ဆုံးထွက်ထားသော Spawn Group ID ကို သိမ်းဆည်းသည်
+            latest_spawn[current_user_id] = orig_chat_id
             
-            if len(spawn_tracker) > 100:
-                spawn_tracker.pop(next(iter(spawn_tracker)))
-        except Exception as e:
-            print(f"❌ Forward Error on Userbot {current_user_id}: {e}")
+            try:
+                fwd_msg = await event.message.forward_to(waifu_chat_id)
+                reply_msg = await fwd_msg.reply("/waifu")
+                
+                spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
+                spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+                
+                if len(spawn_tracker) > 200:
+                    spawn_tracker.pop(next(iter(spawn_tracker)))
+                    
+                print(f"📦 Spawn Detected & Forwarded from {orig_chat_id} to Waifu Chat {waifu_chat_id}")
+            except Exception as e:
+                print(f"❌ Forward Error on Userbot {current_user_id}: {e}")
 
 async def hint_solver_handler(event):
-    """ ဤနေရာသို့ မိမိအကောင့်ရဲ့ သီးသန့် Waifu Chat ထဲက စာများသာ ရောက်လာမည် """
-    global spawn_tracker
+    """ Hint Bot ဆီက အဖြေကိုဖတ်ပြီး မူလ Group ဆီသို့ Catch Command ပြန်လည်ပစ်ခွင့်ပြုသည် """
+    global spawn_tracker, latest_spawn
     
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -116,15 +127,21 @@ async def hint_solver_handler(event):
     if config["is_stopped"]:
         return  
 
-    # ၎င်း Waifu Chat ထဲရှိ အတည်ပြုထားသော Hint Bot ဖြစ်မှသာ အလုပ်လုပ်မည်
     if event.sender_id in hint_bot_ids and event.text:
         match = HINT_REGEX.search(event.text)
         if match:
             catch_command = match.group(1).strip(" `\n\r")
             
+            target_orig_group = None
+            
+            # ၁။ Reply ပါလာလျှင် Tracker ထဲမှ ရှာသည်
             if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
                 target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
+            # ၂။ Reply မပါခဲ့လျှင် ၎င်းအကောင့်၏ နောက်ဆုံးထွက်ထားသော Spawn Group ID ကို သုံးသည် (Smart Fallback)
+            elif current_user_id in latest_spawn:
+                target_orig_group = latest_spawn[current_user_id]
                 
+            if target_orig_group:
                 try:
                     client_to_use = config["client"]
                     delay_time = random.uniform(0.7, 0.9) 
@@ -133,7 +150,7 @@ async def hint_solver_handler(event):
                         
                     sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
                     asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
-                    print(f"🎯 Catch Sent to Original Group {target_orig_group} via Userbot {current_user_id}")
+                    print(f"🎯 Catch Sent to Original Group {target_orig_group} via Userbot {current_user_id} -> {catch_command}")
                 except Exception as e:
                     print(f"❌ Catch Execution Error via Userbot {current_user_id}: {e}")
 
@@ -142,25 +159,29 @@ async def catch_success_forwarder_handler(event):
     if not current_user_id or userbot_instances.get(current_user_id, {}).get("is_stopped"):
         return
         
-    if event.text and ("ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in event.text):
-        try:
-            me = await event.client.get_me()
-            first_name = me.first_name.lower() if me.first_name else ""
-            last_name = me.last_name.lower() if me.last_name else ""
-            full_name = f"{first_name} {last_name}".strip()
-            username = me.username.lower() if me.username else ""
-            
-            text_lower = event.text.lower()
-            
-            if (
-                event.message.mentioned or 
-                (first_name and first_name in text_lower) or 
-                (full_name and full_name in text_lower) or 
-                (username and username in text_lower)
-            ):
-                await event.message.forward_to(SPECIFIC_GROUP)
-        except Exception:
-            pass
+    if event.text:
+        text_raw = event.text
+        text_upper = text_raw.upper()
+        
+        if "YOU GOT A NEW CHARACTER!" in text_upper or "ʏᴏᴜ ɢᴏᴛ ᴀ ɴᴇᴡ ᴄʜᴀʀᴀᴄᴛᴇʀ!" in text_raw:
+            try:
+                me = await event.client.get_me()
+                first_name = me.first_name.lower() if me.first_name else ""
+                last_name = me.last_name.lower() if me.last_name else ""
+                full_name = f"{first_name} {last_name}".strip()
+                username = me.username.lower() if me.username else ""
+                
+                text_lower = text_raw.lower()
+                
+                if (
+                    event.message.mentioned or 
+                    (first_name and first_name in text_lower) or 
+                    (full_name and full_name in text_lower) or 
+                    (username and username in text_lower)
+                ):
+                    await event.message.forward_to(SPECIFIC_GROUP)
+            except Exception:
+                pass
 
 async def telegram_service_handler(event):
     try:
@@ -169,19 +190,12 @@ async def telegram_service_handler(event):
     except Exception:
         pass
 
-# ⚡ [ULTRA OPTIMIZED REGISTRATION] - ပြန်ပြင်ထားသော အပိုင်း
+# ⚡ [ULTRA OPTIMIZED REGISTRATION]
 def register_userbot_handlers(client, waifu_chat_id):
-    """ Telegram Gateway အဆင့်မှာတင် မသက်ဆိုင်တဲ့စာတွေကို Filter ချပစ်လိုက်ခြင်းဖြင့် RAM/CPU ကို အများဆုံးသက်သာစေသည် """
-    # ၁။ Spawn ပတ်သက်သမျှကို Spawn Bot ဆီကစာပဲ လက်ခံမယ် (လူတွေပြောသမျှစာ လုံးဝဝင်မလာပါ)
     client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
-    client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) # 👈 ဒီစာသားကို အမှန်ပြင်လိုက်ပါပြီ
-    
-    # ၂။ Hint Solver ကို မိမိရဲ့ သီးသန့် Waifu Chat တစ်ခုတည်းက စာပဲ ဝင်ဖတ်ခိုင်းမယ်
+    client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) 
     client.add_event_handler(hint_solver_handler, events.NewMessage(chats=waifu_chat_id))
-    
-    # ၃။ Telegram Official Service စာသားများအတွက်သာ
     client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
-
 
 # ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLERS
