@@ -108,7 +108,7 @@ async def spawn_detector_handler(event):
                 spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
                 spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
                 
-                if len(spawn_tracker) > 200:
+                if len(spawn_tracker) > 300:
                     spawn_tracker.pop(next(iter(spawn_tracker)))
                     
                 print(f"📦 Spawn Detected & Forwarded from {orig_chat_id} to Waifu Chat {waifu_chat_id}")
@@ -144,7 +144,7 @@ async def hint_solver_handler(event):
             if target_orig_group:
                 try:
                     client_to_use = config["client"]
-                    delay_time = random.uniform(0.7, 0.9) 
+                    delay_time = random.uniform(0.1, 0.2) 
                     async with client_to_use.action(target_orig_group, 'typing'):
                         await asyncio.sleep(delay_time)
                         
