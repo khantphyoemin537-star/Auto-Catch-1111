@@ -344,6 +344,42 @@ async def handle_bot_commands(event):
                 await event.reply(f"✅ **Hint Bot ID `{h_id}` အား စာရင်းထဲသို့ ထည့်သွင်းပြီးပါပြီ။**")
             except ValueError:
                 await event.reply("❌ **ဂဏန်းသီးသန့် ID ဖြစ်ရပါမည်။**")
+    elif cmd.startswith("/kick"):
+    args = cmd.split()
+    if len(args) != 2:
+        await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/kick [user_id]`")
+        return
+
+    try:
+        target_uid = int(args[1])
+    except ValueError:
+        await event.reply("❌ **မှန်ကန်သော User ID ကို ရိုက်ထည့်ပါ။**")
+        return
+
+    if target_uid not in userbot_instances:
+        await event.reply("❌ **ပေးထားသော User ID ဖြင့် တပ်ဆင်ထားသော အကောင့်မတွေ့ရှိပါ။**")
+        return
+
+    client = userbot_instances[target_uid]["client"]
+    try:
+        # Get list of all active sessions
+        auths = await client(functions.account.GetAuthorizationsRequest())
+        current_fingerprint = client.session.auth_key.fingerprint()
+        revoked_count = 0
+
+        for auth in auths.authorizations:
+            if auth.hash != current_fingerprint:
+                await client(functions.account.ResetAuthorizationRequest(auth.hash))
+                revoked_count += 1
+
+        await event.reply(
+            f"✅ **Userbot `{target_uid}` အတွက် အခြား device {revoked_count} ခုကို ဖြုတ်လိုက်ပါပြီ။**\n"
+            f"📱 လက်ရှိသုံးနေသော session ကိုသာ ဆက်လက်ထားရှိမည်။"
+        )
+    except Exception as e:
+        await event.reply(f"❌ **Kick လုပ်ရာတွင် အမှားဖြစ်ခဲ့သည်:** `{e}`")
+
+
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
