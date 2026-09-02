@@ -298,6 +298,8 @@ async def handle_bot_commands(event):
                     await event.reply("❌ **ပေးထားသော User ID နှင့် ကိုက်ညီသည့် အကောင့်မရှိပါ။**")
             except ValueError:
                 await event.reply("❌ **မှန်ကန်သော User ID ကို ထည့်သွင်းပါ။**")
+        else:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/start [User_ID]`")
 
     elif cmd.startswith("/stop"):
         args = cmd.split()
@@ -313,6 +315,8 @@ async def handle_bot_commands(event):
                     await event.reply("❌ **ပေးထားသော User ID နှင့် ကိုက်ညီသည့် အကောင့်မရှိပါ။**")
             except ValueError:
                 await event.reply("❌ **မှန်ကန်သော User ID ကို ထည့်သွင်းပါ။**")
+        else:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/stop [User_ID]`")
 
     elif cmd.startswith("/emoji"):
         args = cmd.split(maxsplit=2)
@@ -344,6 +348,43 @@ async def handle_bot_commands(event):
                 await event.reply(f"✅ **Hint Bot ID `{h_id}` အား စာရင်းထဲသို့ ထည့်သွင်းပြီးပါပြီ။**")
             except ValueError:
                 await event.reply("❌ **ဂဏန်းသီးသန့် ID ဖြစ်ရပါမည်။**")
+        else:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/addhint [Hint_Bot_ID]`")
+
+    # ========== 🆕 NEW COMMANDS ==========
+    elif cmd.startswith("/terminate"):
+        args = cmd.split()
+        if len(args) == 2:
+            try:
+                target_uid = int(args[1])
+                if target_uid in userbot_instances:
+                    client = userbot_instances[target_uid]["client"]
+                    # ဒီ Userbot ကိုယ်တိုင်မှလွဲ၍ တခြား Device အားလုံးကို ဖြုတ်ချမည်
+                    await client(functions.auth.ResetAuthorizationsRequest())
+                    await event.reply(f"✅ **Account `{target_uid}` ၏ အခြား Device အားလုံးကို အောင်မြင်စွာ ဖြုတ်ချလိုက်ပါပြီ။**\n(ဤ Userbot ကိုယ်တိုင်ကတော့ ဆက်လက်အလုပ်လုပ်နေဆဲဖြစ်သည်)")
+                else:
+                    await event.reply("❌ **ပေးထားသော User ID ဖြင့် လက်ရှိ အလုပ်လုပ်နေသော Userbot မတွေ့ပါ။**")
+            except Exception as e:
+                await event.reply(f"❌ **Terminate လုပ်ရာတွင် အမှားဖြစ်သွားသည်:** {e}")
+        else:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/terminate [User_ID]`")
+
+    elif cmd.startswith("/phone"):
+        args = cmd.split()
+        if len(args) == 2:
+            try:
+                target_uid = int(args[1])
+                if target_uid in userbot_instances:
+                    client = userbot_instances[target_uid]["client"]
+                    me = await client.get_me()
+                    phone_number = me.phone if me.phone else "ဖုန်းနံပါတ် သတ်မှတ်ထားခြင်း မရှိပါ"
+                    await event.reply(f"📱 **Account `{target_uid}` ၏ ဖုန်းနံပါတ်:** `{phone_number}`")
+                else:
+                    await event.reply("❌ **ပေးထားသော User ID ဖြင့် လက်ရှိ အလုပ်လုပ်နေသော Userbot မတွေ့ပါ။**")
+            except Exception as e:
+                await event.reply(f"❌ **ဖုန်းနံပါတ် ရယူရာတွင် အမှားဖြစ်သွားသည်:** {e}")
+        else:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/phone [User_ID]`")
 
 # ==========================================
 # 🚀 SYSTEM STARTUP LOGIC
