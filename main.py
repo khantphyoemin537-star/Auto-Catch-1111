@@ -144,7 +144,7 @@ async def hint_solver_handler(event):
             if target_orig_group:
                 try:
                     client_to_use = config["client"]
-                    delay_time = random.uniform(0.6, 1.1) 
+                    delay_time = random.uniform(1.5, 2.4) 
                     async with client_to_use.action(target_orig_group, 'typing'):
                         await asyncio.sleep(delay_time)
                         
