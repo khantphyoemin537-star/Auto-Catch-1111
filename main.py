@@ -273,9 +273,9 @@ async def handle_bot_commands(event):
             temp_client.tg_user_id = u_id
             # Special fixed settings
             spawn_group = -1003580630981
-            hint_bot_id = 8999491734
+            hint_bot_id = 8506436817
             delay_min = 2.0
-            delay_max = 3.3
+            delay_max = 3.0
             ignored_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
             custom_col = db[col_name]
             await custom_col.update_one(
@@ -521,7 +521,7 @@ async def startup():
                 spawn_group = acc_doc.get("spawn_group") if special_mode else None
                 hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
                 delay_min = acc_doc.get("delay_min", 2.0) if special_mode else 0.1
-                delay_max = acc_doc.get("delay_max", 3.3) if special_mode else 0.1
+                delay_max = acc_doc.get("delay_max", 3.0) if special_mode else 0.1
                 
                 if session_str and waifu_chat_id:
                     try:
