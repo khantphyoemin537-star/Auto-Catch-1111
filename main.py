@@ -89,6 +89,11 @@ async def spawn_detector_handler(event):
         
         # 🎯 ပြင်ဆင်ချက်: Standard ASCII ရော၊ Unicode Small Caps ဖောင့်ကိုပါ တိုက်စစ်သည်
         if "A CHARACTER HAS SPAWNED" in text_upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw:
+            # Special mode: only process if in the specified spawn group
+            if config.get("special_mode", False):
+                if event.chat_id != config["spawn_group"]:
+                    return
+            # for normal, we don't filter by chat_id (but we might want to exclude some groups, as existing)
             if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
                 return  
                 
@@ -96,22 +101,24 @@ async def spawn_detector_handler(event):
                 return  
 
             orig_chat_id = event.chat_id  
-            waifu_chat_id = config["group_id"] 
-            
-            # နောက်ဆုံးထွက်ထားသော Spawn Group ID ကို သိမ်းဆည်းသည်
-            latest_spawn[current_user_id] = orig_chat_id
+            # For special, forward to hint_bot_id instead of group_id
+            target_chat = config["hint_bot_id"] if config.get("special_mode", False) else config["group_id"]
+            latest_spawn[current_user_id] = orig_chat_id  # keep fallback
             
             try:
-                fwd_msg = await event.message.forward_to(waifu_chat_id)
-                reply_msg = await fwd_msg.reply("/w")
-                
+                fwd_msg = await event.message.forward_to(target_chat)
+                # Store mapping for the forwarded message
                 spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
-                spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+                
+                # Normal mode: also send /w to trigger hint bot in the group
+                if not config.get("special_mode", False):
+                    reply_msg = await fwd_msg.reply("/w")
+                    spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
                 
                 if len(spawn_tracker) > 300:
                     spawn_tracker.pop(next(iter(spawn_tracker)))
                     
-                print(f"📦 Spawn Detected & Forwarded from {orig_chat_id} to Waifu Chat {waifu_chat_id}")
+                print(f"📦 Spawn Detected & Forwarded from {orig_chat_id} to {target_chat}")
             except Exception as e:
                 print(f"❌ Forward Error on Userbot {current_user_id}: {e}")
 
@@ -127,36 +134,63 @@ async def hint_solver_handler(event):
     if config["is_stopped"]:
         return  
 
-    if event.sender_id in hint_bot_ids and event.text:
+    # For normal mode: only process if sender in hint_bot_ids and chat is group_id
+    # For special mode: only process if sender == config["hint_bot_id"]
+    is_special = config.get("special_mode", False)
+    if is_special:
+        if event.sender_id != config["hint_bot_id"]:
+            return
+    else:
+        if event.sender_id not in hint_bot_ids:
+            return
+        if event.chat_id != config["group_id"]:
+            return
+
+    if event.text:
         match = HINT_REGEX.search(event.text)
         if match:
             catch_command = match.group(1).strip(" `\n\r")
-            
             target_orig_group = None
             
-            # ၁။ Reply ပါလာလျှင် Tracker ထဲမှ ရှာသည်
             if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
                 target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
-            # ၂။ Reply မပါခဲ့လျှင် ၎င်းအကောင့်၏ နောက်ဆုံးထွက်ထားသော Spawn Group ID ကို သုံးသည် (Smart Fallback)
             elif current_user_id in latest_spawn:
                 target_orig_group = latest_spawn[current_user_id]
                 
             if target_orig_group:
                 try:
                     client_to_use = config["client"]
-                    delay_time = random.uniform(0.1, 0.1) 
+                    # Use special delay if special, else default 0.1
+                    if is_special:
+                        delay_time = random.uniform(config["delay_min"], config["delay_max"])
+                    else:
+                        delay_time = random.uniform(0.1, 0.1)
+                    await asyncio.sleep(delay_time)
+                    
                     async with client_to_use.action(target_orig_group, 'typing'):
-                        await asyncio.sleep(delay_time)
-                        
+                        await asyncio.sleep(0.5)
+                    
                     sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
-                    asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
+                    
+                    # 🔥 SPECIAL MODE အတွက် MESSAGE ကို မဖျက်တော့ပါ (ပုံမှန် Mode အတွက်တော့ အတိုင်းသား ဖျက်မည်)
+                    if not is_special:
+                        asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
+                    
                     print(f"🎯 Catch Sent to Original Group {target_orig_group} via Userbot {current_user_id} -> {catch_command}")
                 except Exception as e:
                     print(f"❌ Catch Execution Error via Userbot {current_user_id}: {e}")
 
 async def catch_success_forwarder_handler(event):
     current_user_id = getattr(event.client, 'tg_user_id', None)
-    if not current_user_id or userbot_instances.get(current_user_id, {}).get("is_stopped"):
+    if not current_user_id or current_user_id not in userbot_instances:
+        return
+        
+    config = userbot_instances.get(current_user_id, {})
+    if config.get("is_stopped"):
+        return
+
+    # 🔥 SPECIAL MODE အတွက် SUCCESS MESSAGE ကို LOG GROUP ဆီ FORWARD မလုပ်တော့ပါ
+    if config.get("special_mode", False):
         return
         
     if event.text:
@@ -194,7 +228,8 @@ async def telegram_service_handler(event):
 def register_userbot_handlers(client, waifu_chat_id):
     client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
     client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) 
-    client.add_event_handler(hint_solver_handler, events.NewMessage(chats=waifu_chat_id))
+    # hint_solver_handler now listens to all messages; filtering is done inside the handler
+    client.add_event_handler(hint_solver_handler, events.NewMessage())
     client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
 
 # ==========================================
@@ -284,6 +319,79 @@ async def handle_bot_commands(event):
         except Exception as e:
             await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
 
+    # ========== 🆕 SPECIAL AUTO ADD COMMAND ==========
+    elif cmd.startswith("/addautospecial"):
+        if not event.is_private:
+            await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
+            return
+        args = cmd.split(maxsplit=2)
+        if len(args) < 2:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:**\n`/addautospecial [DB_Collection_Name] [String_Session]` (သို့) `/addautospecial [DB_Collection_Name]` ဖြင့် session ကို reply တွင်ထည့်ပါ။")
+            return
+        col_name = args[1].strip()
+        session_str = None
+        if len(args) == 3:
+            session_str = args[2].strip()
+        elif event.is_reply:
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.text:
+                session_str = reply_msg.text.strip()
+        if not session_str:
+            await event.reply("❌ **String Session အား မတွေ့ရှိပါ။**")
+            return
+        await event.reply(f"⏳ အကောင့်အား စစ်ဆေးနေပြီး သီးသန့် `db['{col_name}']` ထဲသို့ ထည့်သွင်းနေပါသည်...")
+        try:
+            temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+            await temp_client.start()
+            me = await temp_client.get_me()
+            u_id = me.id
+            temp_client.tg_user_id = u_id
+            # Special fixed settings
+            spawn_group = -1003580630981
+            hint_bot_id = 8999491734
+            delay_min = 2.0
+            delay_max = 3.3
+            ignored_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
+            custom_col = db[col_name]
+            await custom_col.update_one(
+                {"user_id": u_id},
+                {"$set": {
+                    "user_id": u_id,
+                    "session": session_str,
+                    "group_id": spawn_group,  # store spawn_group here for backward compatibility
+                    "ignored_emojis": ignored_emojis,
+                    "is_stopped": False,
+                    "collection_name": col_name,
+                    "special_mode": True,
+                    "spawn_group": spawn_group,
+                    "hint_bot_id": hint_bot_id,
+                    "delay_min": delay_min,
+                    "delay_max": delay_max
+                }},
+                upsert=True
+            )
+            await registry_col.update_one(
+                {"collection_name": col_name},
+                {"$set": {"collection_name": col_name}},
+                upsert=True
+            )
+            userbot_instances[u_id] = {
+                "client": temp_client,
+                "group_id": spawn_group,  # will be used as fallback
+                "ignored_emojis": ignored_emojis,
+                "is_stopped": False,
+                "collection_name": col_name,
+                "special_mode": True,
+                "spawn_group": spawn_group,
+                "hint_bot_id": hint_bot_id,
+                "delay_min": delay_min,
+                "delay_max": delay_max
+            }
+            register_userbot_handlers(temp_client, spawn_group)
+            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`")
+        except Exception as e:
+            await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
+
     elif cmd.startswith("/start"):
         args = cmd.split()
         if len(args) == 2:
@@ -351,7 +459,6 @@ async def handle_bot_commands(event):
         else:
             await event.reply("⚠️ **အသုံးပြုပုံစံ:** `/addhint [Hint_Bot_ID]`")
 
-    # ========== 🆕 NEW COMMANDS ==========
     elif cmd.startswith("/terminate"):
         args = cmd.split()
         if len(args) == 2:
@@ -359,7 +466,6 @@ async def handle_bot_commands(event):
                 target_uid = int(args[1])
                 if target_uid in userbot_instances:
                     client = userbot_instances[target_uid]["client"]
-                    # ဒီ Userbot ကိုယ်တိုင်မှလွဲ၍ တခြား Device အားလုံးကို ဖြုတ်ချမည်
                     await client(functions.auth.ResetAuthorizationsRequest())
                     await event.reply(f"✅ **Account `{target_uid}` ၏ အခြား Device အားလုံးကို အောင်မြင်စွာ ဖြုတ်ချလိုက်ပါပြီ။**\n(ဤ Userbot ကိုယ်တိုင်ကတော့ ဆက်လက်အလုပ်လုပ်နေဆဲဖြစ်သည်)")
                 else:
@@ -410,6 +516,11 @@ async def startup():
                 waifu_chat_id = acc_doc.get("group_id")
                 ignored = acc_doc.get("ignored_emojis", ["🔵", "🟣" ,"🟡" ,"🟠","💮"])
                 is_shuted = acc_doc.get("is_stopped", False)
+                special_mode = acc_doc.get("special_mode", False)
+                spawn_group = acc_doc.get("spawn_group") if special_mode else None
+                hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
+                delay_min = acc_doc.get("delay_min", 2.0) if special_mode else 0.1
+                delay_max = acc_doc.get("delay_max", 3.3) if special_mode else 0.1
                 
                 if session_str and waifu_chat_id:
                     try:
@@ -422,11 +533,16 @@ async def startup():
                             "group_id": waifu_chat_id,
                             "ignored_emojis": ignored,
                             "is_stopped": is_shuted,
-                            "collection_name": col_name
+                            "collection_name": col_name,
+                            "special_mode": special_mode,
+                            "spawn_group": spawn_group if special_mode else waifu_chat_id,
+                            "hint_bot_id": hint_bot_id if special_mode else None,
+                            "delay_min": delay_min,
+                            "delay_max": delay_max
                         }
                         
                         register_userbot_handlers(client, waifu_chat_id)
-                        print(f"🚀 Loaded Account {u_id} from db['{col_name}']. Assigned Waifu Chat: {waifu_chat_id}")
+                        print(f"🚀 Loaded Account {u_id} from db['{col_name}']. Special: {special_mode}")
                     except Exception as e:
                         print(f"⚠️ Failed to boot Account {u_id} from db['{col_name}']: {e}")
                 
