@@ -244,7 +244,81 @@ async def handle_bot_commands(event):
 
     cmd = event.message.text.strip() if event.message.text else ""
 
-    if cmd.startswith("/addauto"):
+    # ========== 🆕 SPECIAL AUTO ADD COMMAND (ပထမဆုံး စစ်ဆေးရန်) ==========
+    if cmd.startswith("/addautospecial"):
+        if not event.is_private:
+            await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
+            return
+        args = cmd.split(maxsplit=2)
+        if len(args) < 2:
+            await event.reply("⚠️ **အသုံးပြုပုံစံ:**\n`/addautospecial [DB_Collection_Name] [String_Session]` (သို့) `/addautospecial [DB_Collection_Name]` ဖြင့် session ကို reply တွင်ထည့်ပါ။")
+            return
+        col_name = args[1].strip()
+        session_str = None
+        if len(args) == 3:
+            session_str = args[2].strip()
+        elif event.is_reply:
+            reply_msg = await event.get_reply_message()
+            if reply_msg and reply_msg.text:
+                session_str = reply_msg.text.strip()
+        if not session_str:
+            await event.reply("❌ **String Session အား မတွေ့ရှိပါ။**")
+            return
+        await event.reply(f"⏳ အကောင့်အား စစ်ဆေးနေပြီး သီးသန့် `db['{col_name}']` ထဲသို့ ထည့်သွင်းနေပါသည်...")
+        try:
+            temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+            await temp_client.start()
+            me = await temp_client.get_me()
+            u_id = me.id
+            temp_client.tg_user_id = u_id
+            # Special fixed settings
+            spawn_group = -1003580630981
+            hint_bot_id = 8999491734
+            delay_min = 2.0
+            delay_max = 3.3
+            ignored_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
+            custom_col = db[col_name]
+            await custom_col.update_one(
+                {"user_id": u_id},
+                {"$set": {
+                    "user_id": u_id,
+                    "session": session_str,
+                    "group_id": spawn_group,  # store spawn_group here for backward compatibility
+                    "ignored_emojis": ignored_emojis,
+                    "is_stopped": False,
+                    "collection_name": col_name,
+                    "special_mode": True,
+                    "spawn_group": spawn_group,
+                    "hint_bot_id": hint_bot_id,
+                    "delay_min": delay_min,
+                    "delay_max": delay_max
+                }},
+                upsert=True
+            )
+            await registry_col.update_one(
+                {"collection_name": col_name},
+                {"$set": {"collection_name": col_name}},
+                upsert=True
+            )
+            userbot_instances[u_id] = {
+                "client": temp_client,
+                "group_id": spawn_group,  # will be used as fallback
+                "ignored_emojis": ignored_emojis,
+                "is_stopped": False,
+                "collection_name": col_name,
+                "special_mode": True,
+                "spawn_group": spawn_group,
+                "hint_bot_id": hint_bot_id,
+                "delay_min": delay_min,
+                "delay_max": delay_max
+            }
+            register_userbot_handlers(temp_client, spawn_group)
+            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`")
+        except Exception as e:
+            await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
+
+    # ========== NORMAL AUTO ADD COMMAND ==========
+    elif cmd.startswith("/addauto"):
         if not event.is_private:
             await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
             return
@@ -316,79 +390,6 @@ async def handle_bot_commands(event):
             register_userbot_handlers(temp_client, waifu_chat_id)
             await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ!**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n🌐 **Designated Waifu Chat:** `{waifu_chat_id}`\n🗂️ **DB Collection:** `db['{col_name}']`")
             
-        except Exception as e:
-            await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
-
-    # ========== 🆕 SPECIAL AUTO ADD COMMAND ==========
-    elif cmd.startswith("/addautospecial"):
-        if not event.is_private:
-            await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
-            return
-        args = cmd.split(maxsplit=2)
-        if len(args) < 2:
-            await event.reply("⚠️ **အသုံးပြုပုံစံ:**\n`/addautospecial [DB_Collection_Name] [String_Session]` (သို့) `/addautospecial [DB_Collection_Name]` ဖြင့် session ကို reply တွင်ထည့်ပါ။")
-            return
-        col_name = args[1].strip()
-        session_str = None
-        if len(args) == 3:
-            session_str = args[2].strip()
-        elif event.is_reply:
-            reply_msg = await event.get_reply_message()
-            if reply_msg and reply_msg.text:
-                session_str = reply_msg.text.strip()
-        if not session_str:
-            await event.reply("❌ **String Session အား မတွေ့ရှိပါ။**")
-            return
-        await event.reply(f"⏳ အကောင့်အား စစ်ဆေးနေပြီး သီးသန့် `db['{col_name}']` ထဲသို့ ထည့်သွင်းနေပါသည်...")
-        try:
-            temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
-            await temp_client.start()
-            me = await temp_client.get_me()
-            u_id = me.id
-            temp_client.tg_user_id = u_id
-            # Special fixed settings
-            spawn_group = -1003580630981
-            hint_bot_id = 8999491734
-            delay_min = 2.0
-            delay_max = 3.3
-            ignored_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
-            custom_col = db[col_name]
-            await custom_col.update_one(
-                {"user_id": u_id},
-                {"$set": {
-                    "user_id": u_id,
-                    "session": session_str,
-                    "group_id": spawn_group,  # store spawn_group here for backward compatibility
-                    "ignored_emojis": ignored_emojis,
-                    "is_stopped": False,
-                    "collection_name": col_name,
-                    "special_mode": True,
-                    "spawn_group": spawn_group,
-                    "hint_bot_id": hint_bot_id,
-                    "delay_min": delay_min,
-                    "delay_max": delay_max
-                }},
-                upsert=True
-            )
-            await registry_col.update_one(
-                {"collection_name": col_name},
-                {"$set": {"collection_name": col_name}},
-                upsert=True
-            )
-            userbot_instances[u_id] = {
-                "client": temp_client,
-                "group_id": spawn_group,  # will be used as fallback
-                "ignored_emojis": ignored_emojis,
-                "is_stopped": False,
-                "collection_name": col_name,
-                "special_mode": True,
-                "spawn_group": spawn_group,
-                "hint_bot_id": hint_bot_id,
-                "delay_min": delay_min,
-                "delay_max": delay_max
-            }
-            register_userbot_handlers(temp_client, spawn_group)
-            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`")
         except Exception as e:
             await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
 
