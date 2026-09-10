@@ -20,6 +20,12 @@ OWNER_ID = 7693106830
 SPECIFIC_GROUP = -1003848067679  # Log Group
 SPAWN_BOT_ID = 6157455819
 
+# 🎯 SPECIAL MODE CONSTANTS
+SPECIAL_HINT_BOT_ID = 8506436817
+SPECIAL_SPAWN_GROUP = -1003580630981
+SPECIAL_DELAY_MIN = 2.0
+SPECIAL_DELAY_MAX = 3.3
+
 # 🎯 GLOBAL RUNTIME STORAGE
 userbot_instances = {}        
 hint_bot_ids = {8506436817}   
@@ -87,13 +93,12 @@ async def spawn_detector_handler(event):
         text_raw = event.text
         text_upper = text_raw.upper()
         
-        # 🎯 ပြင်ဆင်ချက်: Standard ASCII ရော၊ Unicode Small Caps ဖောင့်ကိုပါ တိုက်စစ်သည်
         if "A CHARACTER HAS SPAWNED" in text_upper or "ᴀ ᴄʜᴀʀᴀᴄᴛᴇʀ ʜᴀs sᴘᴀᴡɴᴇᴅ" in text_raw:
             # Special mode: only process if in the specified spawn group
             if config.get("special_mode", False):
                 if event.chat_id != config["spawn_group"]:
                     return
-            # for normal, we don't filter by chat_id (but we might want to exclude some groups, as existing)
+            # Exclude some groups (for normal mode)
             if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
                 return  
                 
@@ -101,13 +106,11 @@ async def spawn_detector_handler(event):
                 return  
 
             orig_chat_id = event.chat_id  
-            # For special, forward to hint_bot_id instead of group_id
             target_chat = config["hint_bot_id"] if config.get("special_mode", False) else config["group_id"]
-            latest_spawn[current_user_id] = orig_chat_id  # keep fallback
+            latest_spawn[current_user_id] = orig_chat_id
             
             try:
                 fwd_msg = await event.message.forward_to(target_chat)
-                # Store mapping for the forwarded message
                 spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
                 
                 # Normal mode: also send /w to trigger hint bot in the group
@@ -134,16 +137,18 @@ async def hint_solver_handler(event):
     if config["is_stopped"]:
         return  
 
-    # For normal mode: only process if sender in hint_bot_ids and chat is group_id
-    # For special mode: only process if sender == config["hint_bot_id"] (which is 8506436817)
     is_special = config.get("special_mode", False)
+    
     if is_special:
+        # 🔥 SPECIAL MODE အတွက် အရေးကြီးဆုံး ပြင်ဆင်ချက်
+        # ၁။ Hint Bot ရဲ့ DM ဖြစ်ရမယ် (Public Group မဟုတ်ရဘူး)
+        # ၂။ Sender က Hint Bot ID ဖြစ်ရမယ်
+        if not event.is_private:
+            return
         if event.sender_id != config["hint_bot_id"]:
             return
-        # Special mode: ဘယ် chat မှာ hint ဖြစ်နေနေ စစ်ဆေးတယ်
-        # ဒါပေမယ့် spawn_tracker ထဲမှာ orig_chat_id ကို သိမ်းထားပြီးသားမို့
-        # အောက်မှာ ဆက်လုပ်တယ်
     else:
+        # Normal mode: only process if sender in hint_bot_ids and chat is group_id
         if event.sender_id not in hint_bot_ids:
             return
         if event.chat_id != config["group_id"]:
@@ -155,7 +160,7 @@ async def hint_solver_handler(event):
             catch_command = match.group(1).strip(" `\n\r")
             target_orig_group = None
             
-            # ✅ SPECIAL MODE အတွက် - ဘယ် Group က Spawn ကျလဲဆိုတာကို spawn_tracker ထဲမှာ ရှာတယ်
+            # ဘယ် Group က Spawn ကျလဲဆိုတာကို spawn_tracker ထဲမှာ ရှာတယ်
             if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
                 target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
             elif current_user_id in latest_spawn:
@@ -164,7 +169,6 @@ async def hint_solver_handler(event):
             if target_orig_group:
                 try:
                     client_to_use = config["client"]
-                    # Use special delay if special, else default 0.1
                     if is_special:
                         delay_time = random.uniform(config["delay_min"], config["delay_max"])
                     else:
@@ -176,7 +180,7 @@ async def hint_solver_handler(event):
                     
                     sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
                     
-                    # 🔥 SPECIAL MODE အတွက် MESSAGE ကို မဖျက်တော့ပါ (ပုံမှန် Mode အတွက်တော့ အတိုင်းသား ဖျက်မည်)
+                    # SPECIAL MODE အတွက် MESSAGE ကို မဖျက်တော့ပါ
                     if not is_special:
                         asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
                     
@@ -193,7 +197,7 @@ async def catch_success_forwarder_handler(event):
     if config.get("is_stopped"):
         return
 
-    # 🔥 SPECIAL MODE အတွက် SUCCESS MESSAGE ကို LOG GROUP ဆီ FORWARD မလုပ်တော့ပါ
+    # SPECIAL MODE အတွက် SUCCESS MESSAGE ကို LOG GROUP ဆီ FORWARD မလုပ်တော့ပါ
     if config.get("special_mode", False):
         return
         
@@ -232,7 +236,6 @@ async def telegram_service_handler(event):
 def register_userbot_handlers(client, waifu_chat_id):
     client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
     client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID)) 
-    # hint_solver_handler now listens to all messages; filtering is done inside the handler
     client.add_event_handler(hint_solver_handler, events.NewMessage())
     client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
 
@@ -248,7 +251,7 @@ async def handle_bot_commands(event):
 
     cmd = event.message.text.strip() if event.message.text else ""
 
-    # ========== 🆕 SPECIAL AUTO ADD COMMAND (ပထမဆုံး စစ်ဆေးရန်) ==========
+    # ========== SPECIAL AUTO ADD COMMAND (ပထမဆုံး စစ်ဆေးရန်) ==========
     if cmd.startswith("/addautospecial"):
         if not event.is_private:
             await event.reply("⚠️ **လုံခြုံရေးအရ ဤစနစ်သစ်ကို Bot ၏ DM တွင်သာ သုံးစွဲခွင့်ပြုပါသည်။**")
@@ -276,10 +279,10 @@ async def handle_bot_commands(event):
             u_id = me.id
             temp_client.tg_user_id = u_id
             # Special fixed settings
-            spawn_group = -1003580630981
-            hint_bot_id = 8506436817  # 🔥 ခင်ဗျားပြောတဲ့ Hint Bot ID
-            delay_min = 2.0
-            delay_max = 3.3
+            spawn_group = SPECIAL_SPAWN_GROUP
+            hint_bot_id = SPECIAL_HINT_BOT_ID
+            delay_min = SPECIAL_DELAY_MIN
+            delay_max = SPECIAL_DELAY_MAX
             ignored_emojis = ["🔵", "🟣" ,"🟡" ,"🟠","💮"]
             custom_col = db[col_name]
             await custom_col.update_one(
@@ -287,7 +290,7 @@ async def handle_bot_commands(event):
                 {"$set": {
                     "user_id": u_id,
                     "session": session_str,
-                    "group_id": spawn_group,  # store spawn_group here for backward compatibility
+                    "group_id": spawn_group,
                     "ignored_emojis": ignored_emojis,
                     "is_stopped": False,
                     "collection_name": col_name,
@@ -306,7 +309,7 @@ async def handle_bot_commands(event):
             )
             userbot_instances[u_id] = {
                 "client": temp_client,
-                "group_id": spawn_group,  # will be used as fallback
+                "group_id": spawn_group,
                 "ignored_emojis": ignored_emojis,
                 "is_stopped": False,
                 "collection_name": col_name,
@@ -317,7 +320,7 @@ async def handle_bot_commands(event):
                 "delay_max": delay_max
             }
             register_userbot_handlers(temp_client, spawn_group)
-            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`\n\n✅ **ဘယ် Group မှာပဲ Hint ဖော်နေနေ အဲဒီ Spawn Group ကိုပဲ Catch ပြန်ပို့မယ်**")
+            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`\n\n✅ **Hint Bot ရဲ့ DM မှရတဲ့ `/catch` ကိုပဲ ယူပြီး မူလ Spawn Group ကိုပဲ ပြန်ပို့မယ်**")
         except Exception as e:
             await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
 
