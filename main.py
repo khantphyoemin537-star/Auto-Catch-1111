@@ -28,7 +28,7 @@ SPECIAL_DELAY_MAX = 5
 
 # 🎯 GLOBAL RUNTIME STORAGE
 userbot_instances = {}        
-hint_bot_ids = {8999491734}   
+hint_bot_ids = {8506436817}   
 spawn_tracker = {}            # { (user_id, msg_id): orig_chat_id } - ကိုယ်တိုင် Reply လုပ်ထားတဲ့ msg_id တွေကိုပဲ သိမ်း
 latest_spawn = {}             # { user_id: orig_chat_id }
 latest_spawn_msg = {}         # { user_id: spawn_msg_id }
