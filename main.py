@@ -23,8 +23,9 @@ SPAWN_BOT_ID = 6157455819
 # 🎯 SPECIAL MODE CONSTANTS
 SPECIAL_HINT_BOT_ID = 8999491734
 SPECIAL_SPAWN_GROUP = -1003580630981
-SPECIAL_DELAY_MIN = 4
-SPECIAL_DELAY_MAX = 5
+SPECIAL_DELAY_MIN = 1.7
+SPECIAL_DELAY_MAX = 2.1
+SPECIAL_W_REPLY_DELAY = 0.7   # 🔥 Spawn ကျပြီး /w မလုပ်ခင် စောင့်ရမယ့်အချိန်
 
 # 🎯 GLOBAL RUNTIME STORAGE
 userbot_instances = {}        
@@ -130,10 +131,10 @@ async def spawn_detector_handler(event):
         
         try:
             if is_special:
-                # 🔥 SPECIAL MODE: Spawn Group ထဲမှာတင် Reply /w လုပ်တယ်
+                # 🔥 SPECIAL MODE: Spawn ကျပြီး ၀.၇ စက္ကန့် စောင့်ပြီးမှ /w Reply လုပ်တယ်
+                await asyncio.sleep(SPECIAL_W_REPLY_DELAY)
                 reply_msg = await event.message.reply("/w")
                 # ကိုယ့် /w Message ID ကိုပဲ spawn_tracker ထဲမှာ သိမ်း
-                # ဒါကြောင့် Hint Bot က ဒီ /w ကို Reply လုပ်ထားမှသာ လက်ခံမယ်
                 spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
                 print(f"📦 Special Spawn -> Replied /w in group {orig_chat_id} (our /w msg_id={reply_msg.id})")
             else:
@@ -194,16 +195,12 @@ async def hint_solver_handler(event):
     if match:
         catch_command = match.group(1).strip(" `\n\r")
         target_orig_group = None
-        spawn_msg_id = None
         
         # ဘယ် Group က Spawn ကျလဲဆိုတာကို spawn_tracker ထဲမှာ ရှာတယ်
         if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
             target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
         elif current_user_id in latest_spawn:
             target_orig_group = latest_spawn[current_user_id]
-        
-        if is_special:
-            spawn_msg_id = latest_spawn_msg.get(current_user_id)
             
         if target_orig_group:
             try:
@@ -214,18 +211,12 @@ async def hint_solver_handler(event):
                     delay_time = random.uniform(0.1, 0.1)
                 await asyncio.sleep(delay_time)
                 
+                # 🔥 Typing Action ကို ၀.၂ စက္ကန့်ပဲ ထားပြီး ပိုမြန်အောင် လုပ်ထားတယ်
                 async with client_to_use.action(target_orig_group, 'typing'):
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.2)
                 
-                # 🔥 SPECIAL MODE: /catch ကို Spawn Message ကို Reply အနေနဲ့ ပို့တယ်
-                if is_special and spawn_msg_id:
-                    sent_msg = await client_to_use.send_message(
-                        target_orig_group,
-                        catch_command,
-                        reply_to=spawn_msg_id
-                    )
-                else:
-                    sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
+                # 🔥 SPECIAL MODE: /catch ကို Reply မပြန်ဘဲ တိုက်ရိုက်ပို့တယ်
+                sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
                 
                 # SPECIAL MODE အတွက် MESSAGE ကို မဖျက်တော့ပါ
                 if not is_special:
@@ -368,7 +359,7 @@ async def handle_bot_commands(event):
                 "delay_max": delay_max
             }
             register_userbot_handlers(temp_client, spawn_group)
-            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`\n\n✅ **ကိုယ်တိုင် `/w` လုပ်ထားတဲ့ Spawn တွေအတွက်ပဲ `/catch` ကို လက်ခံမယ်**\n✅ **Emoji ပယ်ထားတဲ့ Spawn တွေကို လုံးဝ မကောက်ဘူး**")
+            await event.reply(f"✅ **အောင်မြင်စွာ တပ်ဆင်ပြီးပါပြီ! (Special Mode)**\n👤 **နာမည်:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n📍 **Spawn Group:** `{spawn_group}`\n🤖 **Hint Bot:** `{hint_bot_id}`\n⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n🗂️ **DB Collection:** `db['{col_name}']`\n\n✅ **ကိုယ်တိုင် `/w` လုပ်ထားတဲ့ Spawn တွေအတွက်ပဲ `/catch` ကို လက်ခံမယ်**\n✅ **Emoji ပယ်ထားတဲ့ Spawn တွေကို လုံးဝ မကောက်ဘူး**\n✅ **`/catch` ကို Reply မပြန်ဘဲ တိုက်ရိုက်ပို့မယ်**")
         except Exception as e:
             await event.reply(f"❌ **Userbot ချိတ်ဆက်မှု ပျက်ကွက်ပါသည်:** {e}")
 
