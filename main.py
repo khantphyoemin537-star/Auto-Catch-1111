@@ -24,8 +24,8 @@ SPAWN_BOT_ID = 6157455819
 SPECIAL_HINT_BOT_ID = 8999491734
 SPECIAL_SPAWN_GROUP = -1003580630981
 SPECIAL_DELAY_MIN = 0.4
-SPECIAL_DELAY_MAX = 1
-SPECIAL_W_REPLY_DELAY = 0.3  # 🔥 Spawn ကျပြီး /w မလုပ်ခင် စောင့်ရမယ့်အချိန်
+SPECIAL_DELAY_MAX = 0.5
+SPECIAL_W_REPLY_DELAY = 0.7 # 🔥 Spawn ကျပြီး /w မလုပ်ခင် စောင့်ရမယ့်အချိန်
 
 # 🎯 GLOBAL RUNTIME STORAGE
 userbot_instances = {}        
