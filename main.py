@@ -21,11 +21,11 @@ SPECIFIC_GROUP = -1003848067679  # Log Group
 SPAWN_BOT_ID = 6157455819
 
 # 🎯 SPECIAL MODE CONSTANTS
-SPECIAL_HINT_BOT_ID = 8088685714
+SPECIAL_HINT_BOT_ID = 8999491734
 SPECIAL_SPAWN_GROUP = -1003580630981
 SPECIAL_DELAY_MIN = 0.2        # 🔥 သုည ထားလိုက် (ချက်ချင်းပို့)
 SPECIAL_DELAY_MAX = 0.5     # 🔥 ၀.၁ စက္ကန့်ပဲ
-SPECIAL_W_REPLY_DELAY = 1  # 🔥 /w မလုပ်ခင် စောင့်ချိန်
+SPECIAL_W_REPLY_DELAY = 0.7  # 🔥 /w မလုပ်ခင် စောင့်ချိန်
 
 # 🎯 GLOBAL RUNTIME STORAGE
 userbot_instances = {}        
