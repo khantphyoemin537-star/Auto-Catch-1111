@@ -25,7 +25,7 @@ SPECIAL_DELAY_MAX = 0.6
 SPECIAL_W_REPLY_DELAY = 0.5
 
 CGIFT_CHAT_ID = -1003580630981
-CGIFT_WAIT_SEC = 3
+CGIFT_WAIT_SEC = 6   # 🔥 3 → 6
 
 # 🎯 STORAGE
 userbot_instances = {}
@@ -40,7 +40,6 @@ bot_state = {
     "selected_user_id": None,
     "save_mode": False,
 }
-# 🎁 per-user cgift loop: { user_id: {"running", "index", "chat_id", "reply_to_msg_id", "task"} }
 cgift_state = {}
 
 # MongoDB
@@ -54,7 +53,7 @@ talk_col = db["random_talk"]
 filters_col = db["filters"]
 hint_bots_col = db["hint_bots_col"]
 registry_col = db["collection_registry"]
-cgift_ids_col = db["cgift_ids"]   # 🎁 NEW collection
+cgift_ids_col = db["cgift_ids"]
 
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 
@@ -98,7 +97,6 @@ def get_message_text(event):
 # 🔧 HELPERS
 # ==========================================
 def get_cmd_and_args(text):
-    """ /cmd@Bot args  →  ("/cmd", "args") """
     if not text:
         return "", ""
     text = text.strip()
@@ -110,7 +108,6 @@ def get_cmd_and_args(text):
     return cmd, args
 
 def parse_ids_from_text(text):
-    """ Extract each line that is all digits (preserve leading zeros) """
     ids = []
     for line in text.split("\n"):
         line = line.strip()
@@ -119,7 +116,7 @@ def parse_ids_from_text(text):
     return ids
 
 # ==========================================
-# 🎁 CGIFT LOOP (runs on the selected selfbot)
+# 🎁 CGIFT LOOP
 # ==========================================
 async def run_cgift_loop(client, user_id):
     state = cgift_state.get(user_id)
@@ -144,12 +141,19 @@ async def run_cgift_loop(client, user_id):
         while state["running"] and state["index"] < total:
             gift_id = ids[state["index"]]
             try:
-                await client.send_message(
-                    state["chat_id"],
-                    f"/cgift {gift_id}",
-                    reply_to=state["reply_to_msg_id"]
-                )
-                print(f"🎁 [{user_id}] /cgift {gift_id}  ({state['index']+1}/{total})")
+                reply_target = state.get("reply_to_msg_id")
+                if reply_target:
+                    await client.send_message(
+                        state["chat_id"],
+                        f"/cgift {gift_id}",
+                        reply_to=reply_target
+                    )
+                else:
+                    await client.send_message(
+                        state["chat_id"],
+                        f"/cgift {gift_id}"
+                    )
+                print(f"🎁 [{user_id}] /cgift {gift_id}  ({state['index']+1}/{total}) reply_to={reply_target}")
             except Exception as e:
                 print(f"❌ [{user_id}] send error for {gift_id}: {e}")
 
@@ -161,7 +165,7 @@ async def run_cgift_loop(client, user_id):
 
         if state["index"] >= total:
             print(f"✅ [{user_id}] Completed all {total} IDs")
-            state["index"] = 0  # next time starts from beginning
+            state["index"] = 0
 
         state["running"] = False
         state["task"] = None
@@ -171,7 +175,7 @@ async def run_cgift_loop(client, user_id):
         state["task"] = None
 
 # ==========================================
-# 🎁 SELF-BOT SIDE HANDLER  (/cgift  &  /stop in the group)
+# 🎁 SELF-BOT SIDE HANDLER
 # ==========================================
 async def cgift_selfbot_handler(event):
     current_user_id = getattr(event.client, 'tg_user_id', None)
@@ -185,7 +189,6 @@ async def cgift_selfbot_handler(event):
     cmd, args = get_cmd_and_args(event.text)
 
     if cmd == "/cgift" and not args:
-        # start loop
         if current_user_id not in cgift_state:
             cgift_state[current_user_id] = {
                 "running": False, "index": 0,
@@ -193,10 +196,20 @@ async def cgift_selfbot_handler(event):
             }
         state = cgift_state[current_user_id]
         if state["running"]:
-            return  # already running
+            return
         state["running"] = True
         state["chat_id"] = event.chat_id
-        state["reply_to_msg_id"] = event.message.id  # mark this message as the reply target
+
+        # 🔥 အဓိက ပြင်ဆင်ချက်:
+        # /cgift က သူများကို Reply လုပ်ထားရင် → အဲဒီသူများရဲ့ Message ကို Reply target သုံး
+        # မဟုတ်ရင် → Reply မပါဘဲ ပို့ (ကိုယ့်ကိုယ်ကို Reply မလုပ်တော့ဘူး)
+        if event.reply_to_msg_id:
+            state["reply_to_msg_id"] = event.reply_to_msg_id
+            print(f"🎯 [{current_user_id}] /cgift will reply to OTHER msg_id={event.reply_to_msg_id}")
+        else:
+            state["reply_to_msg_id"] = None
+            print(f"🎯 [{current_user_id}] /cgift will send WITHOUT reply")
+
         state["task"] = asyncio.create_task(run_cgift_loop(event.client, current_user_id))
         print(f"🚀 [{current_user_id}] /cgift started from index {state['index']}")
 
@@ -355,7 +368,7 @@ def register_userbot_handlers(client, waifu_chat_id):
     client.add_event_handler(spawn_detector_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
     client.add_event_handler(catch_success_forwarder_handler, events.NewMessage(from_users=SPAWN_BOT_ID))
     client.add_event_handler(hint_solver_handler, events.NewMessage())
-    client.add_event_handler(cgift_selfbot_handler, events.NewMessage(outgoing=True))  # 🎁 only outgoing
+    client.add_event_handler(cgift_selfbot_handler, events.NewMessage(outgoing=True))
     client.add_event_handler(telegram_service_handler, events.NewMessage(chats=777000))
 
 # ==========================================
@@ -374,7 +387,7 @@ async def handle_bot_commands(event):
 
     cmd, args = get_cmd_and_args(text)
 
-    # ---------- 🎁 SAVE MODE : collect bulk IDs ----------
+    # ---------- 🎁 SAVE MODE ----------
     if bot_state["save_mode"] and bot_state["selected_user_id"] and not text.startswith("/"):
         ids = parse_ids_from_text(text)
         if ids:
@@ -390,7 +403,7 @@ async def handle_bot_commands(event):
             print(f"💾 Saved {len(ids)} IDs → {target_uid} (total {total})")
         return
 
-    # ---------- 🎁 /idsave {user_id} ----------
+    # ---------- /idsave {user_id} ----------
     if cmd == "/idsave":
         if not args:
             await event.reply("⚠️ **Usage:** `/idsave {selfbot_user_id}`")
@@ -409,7 +422,7 @@ async def handle_bot_commands(event):
             f"Now run `/save on` to start bulk‑saving IDs."
         )
 
-    # ---------- 🎁 /save on | off ----------
+    # ---------- /save on | off ----------
     elif cmd == "/save":
         if not bot_state["selected_user_id"]:
             await event.reply("⚠️ **Run `/idsave {user_id}` first.**")
@@ -430,7 +443,7 @@ async def handle_bot_commands(event):
         else:
             await event.reply("⚠️ **Usage:** `/save on` or `/save off`")
 
-    # ---------- 🎁 /clean id ----------
+    # ---------- /clean id ----------
     elif cmd == "/clean":
         if not bot_state["selected_user_id"]:
             await event.reply("⚠️ **Run `/idsave {user_id}` first.**")
@@ -438,14 +451,13 @@ async def handle_bot_commands(event):
         if args.lower() == "id":
             target_uid = bot_state["selected_user_id"]
             await cgift_ids_col.delete_one({"user_id": target_uid})
-            # reset runtime index too
             if target_uid in cgift_state:
                 cgift_state[target_uid]["index"] = 0
             await event.reply(f"🗑️ **Cleaned all IDs for selfbot `{target_uid}`**")
         else:
             await event.reply("⚠️ **Usage:** `/clean id`")
 
-    # ---------- 🆕 /addautospecial ----------
+    # ---------- /addautospecial ----------
     elif cmd == "/addautospecial":
         if not event.is_private:
             await event.reply("⚠️ **Please use this command in the bot's DM.**")
