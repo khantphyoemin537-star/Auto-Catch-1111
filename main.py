@@ -20,12 +20,12 @@ SPAWN_BOT_ID = 6157455819
 
 SPECIAL_HINT_BOT_ID = 8999491734
 SPECIAL_SPAWN_GROUP = -1003580630981
-SPECIAL_DELAY_MIN = 1
-SPECIAL_DELAY_MAX = 2
+SPECIAL_DELAY_MIN = 0.5
+SPECIAL_DELAY_MAX = 1
 SPECIAL_W_REPLY_DELAY = 1
 
 CGIFT_CHAT_ID = -1003580630981
-CGIFT_WAIT_SEC = 6   # 🔥 3 → 6
+CGIFT_WAIT_SEC = 6
 
 # 🎯 STORAGE
 userbot_instances = {}
@@ -200,9 +200,6 @@ async def cgift_selfbot_handler(event):
         state["running"] = True
         state["chat_id"] = event.chat_id
 
-        # 🔥 အဓိက ပြင်ဆင်ချက်:
-        # /cgift က သူများကို Reply လုပ်ထားရင် → အဲဒီသူများရဲ့ Message ကို Reply target သုံး
-        # မဟုတ်ရင် → Reply မပါဘဲ ပို့ (ကိုယ့်ကိုယ်ကို Reply မလုပ်တော့ဘူး)
         if event.reply_to_msg_id:
             state["reply_to_msg_id"] = event.reply_to_msg_id
             print(f"🎯 [{current_user_id}] /cgift will reply to OTHER msg_id={event.reply_to_msg_id}")
@@ -443,19 +440,31 @@ async def handle_bot_commands(event):
         else:
             await event.reply("⚠️ **Usage:** `/save on` or `/save off`")
 
-    # ---------- /clean id ----------
+    # ---------- 🔥 /clean (args မပါလည်း ဖျက်) ----------
     elif cmd == "/clean":
         if not bot_state["selected_user_id"]:
             await event.reply("⚠️ **Run `/idsave {user_id}` first.**")
             return
-        if args.lower() == "id":
-            target_uid = bot_state["selected_user_id"]
-            await cgift_ids_col.delete_one({"user_id": target_uid})
-            if target_uid in cgift_state:
-                cgift_state[target_uid]["index"] = 0
-            await event.reply(f"🗑️ **Cleaned all IDs for selfbot `{target_uid}`**")
-        else:
-            await event.reply("⚠️ **Usage:** `/clean id`")
+        target_uid = bot_state["selected_user_id"]
+
+        # Save mode ကို ပိတ်ပါ
+        bot_state["save_mode"] = False
+
+        # ID စာရင်း အကုန်ဖျက်
+        doc = await cgift_ids_col.find_one({"user_id": target_uid})
+        count = len(doc.get("ids", [])) if doc else 0
+        await cgift_ids_col.delete_one({"user_id": target_uid})
+
+        # Runtime index ကိုလည်း reset
+        if target_uid in cgift_state:
+            cgift_state[target_uid]["index"] = 0
+            cgift_state[target_uid]["running"] = False
+
+        await event.reply(
+            f"🗑️ **Cleaned all saved IDs for selfbot `{target_uid}`**\n"
+            f"📊 **Deleted:** `{count}` IDs"
+        )
+        print(f"🗑️ /clean: removed {count} IDs for {target_uid}")
 
     # ---------- /addautospecial ----------
     elif cmd == "/addautospecial":
@@ -722,8 +731,8 @@ async def startup():
             special_mode = acc_doc.get("special_mode", False)
             spawn_group = acc_doc.get("spawn_group") if special_mode else None
             hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
-            delay_min = acc_doc.get("delay_min", 0.3) if special_mode else 0.1
-            delay_max = acc_doc.get("delay_max", 0.6) if special_mode else 0.1
+            delay_min = acc_doc.get("delay_min", 0.5) if special_mode else 0.1
+            delay_max = acc_doc.get("delay_max", 1) if special_mode else 0.1
 
             if session_str and waifu_chat_id:
                 try:
