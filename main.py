@@ -32,16 +32,22 @@ SPECIFIC_GROUP = -1003848067679
 SPAWN_BOT_ID = 6157455819
 
 SPECIAL_HINT_BOT_ID = 8999491734
-SPECIAL_SPAWN_GROUP = -1003580630981
+
+# 🔥 Special Mode Spawn Groups (multiple)
+SPECIAL_SPAWN_GROUPS = [
+    -1003580630981,
+    -1003967256441,   # 🆕 NEW (private restricted)
+]
+SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
 # 🎯 TIMING (Human-like, total 4–6 seconds)
-SPECIAL_W_REPLY_DELAY_MIN = 1.5    # /w မလုပ်ခင် အနည်းဆုံး
-SPECIAL_W_REPLY_DELAY_MAX = 2.5    # /w မလုပ်ခင် အများဆုံး
+SPECIAL_W_REPLY_DELAY_MIN = 1.5
+SPECIAL_W_REPLY_DELAY_MAX = 2.5
 
-SPECIAL_DELAY_MIN = 2.5            # /catch မပို့ခင် အနည်းဆုံး
-SPECIAL_DELAY_MAX = 3.5            # /catch မပို့ခင် အများဆုံး
+SPECIAL_DELAY_MIN = 2.5
+SPECIAL_DELAY_MAX = 3.5
 
-SPECIAL_W_REPLY_DELAY = 2.0        # (backward compat fallback)
+SPECIAL_W_REPLY_DELAY = 2.0  # fallback
 
 CGIFT_CHAT_ID = -1003580630981
 CGIFT_WAIT_SEC = 6
@@ -425,8 +431,11 @@ async def spawn_detector_handler(event):
     text_clean = clean_invisible(text_raw)
 
     is_special = config.get("special_mode", False)
-    if is_special and event.chat_id != config["spawn_group"]:
-        return
+    if is_special:
+        # 🔥 Support multiple spawn groups
+        allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
+        if event.chat_id not in allowed:
+            return
     if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
         return
     if any(emoji in text_clean for emoji in config["ignored_emojis"]):
@@ -443,7 +452,7 @@ async def spawn_detector_handler(event):
             await asyncio.sleep(w_delay)
             reply_msg = await event.message.reply("/w")
             spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
-            print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s")
+            print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s in {orig_chat_id}")
         else:
             target_chat = config["group_id"]
             fwd_msg = await event.message.forward_to(target_chat)
@@ -474,7 +483,9 @@ async def hint_solver_handler(event):
 
     is_special = config.get("special_mode", False)
     if is_special:
-        if event.chat_id != config["spawn_group"]:
+        # 🔥 Support multiple spawn groups
+        allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
+        if event.chat_id not in allowed:
             return
         if event.sender_id != config["hint_bot_id"]:
             return
@@ -515,7 +526,6 @@ async def hint_solver_handler(event):
                 config.get("delay_min", SPECIAL_DELAY_MIN),
                 config.get("delay_max", SPECIAL_DELAY_MAX)
             )
-            # Split delay: first half "read", second half "typing"
             read_time = delay_time * random.uniform(0.4, 0.6)
             typing_time = max(0.3, delay_time - read_time)
 
@@ -531,7 +541,7 @@ async def hint_solver_handler(event):
             print(
                 f"🥷 [{current_user_id}] /catch sent after "
                 f"read={read_time:.2f}s + typing={typing_time:.2f}s "
-                f"(total={delay_time:.2f}s)"
+                f"(total={delay_time:.2f}s) → {target_orig_group}"
             )
         else:
             await asyncio.sleep(0.1)
@@ -607,6 +617,7 @@ def register_userbot_handlers(client, waifu_chat_id):
 @bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, OWNER_ID]))
 async def handle_bot_commands(event):
     global userbot_instances, hint_bot_ids
+    cmd = ""
     try:
         if event.sender_id != OWNER_ID:
             return
@@ -872,6 +883,7 @@ async def handle_bot_commands(event):
                 u_id = me.id
                 temp_client.tg_user_id = u_id
                 spawn_group = SPECIAL_SPAWN_GROUP
+                spawn_groups = list(SPECIAL_SPAWN_GROUPS)
                 hint_bot_id = SPECIAL_HINT_BOT_ID
                 ignored_emojis = ["🔵", "🟣", "🟡", "🟠", "💮"]
                 custom_col = db[col_name]
@@ -881,7 +893,9 @@ async def handle_bot_commands(event):
                         "user_id": u_id, "session": session_str,
                         "group_id": spawn_group, "ignored_emojis": ignored_emojis,
                         "is_stopped": False, "collection_name": col_name,
-                        "special_mode": True, "spawn_group": spawn_group,
+                        "special_mode": True,
+                        "spawn_group": spawn_group,
+                        "spawn_groups": spawn_groups,
                         "hint_bot_id": hint_bot_id,
                         "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX
                     }},
@@ -896,14 +910,17 @@ async def handle_bot_commands(event):
                     "client": temp_client, "group_id": spawn_group,
                     "ignored_emojis": ignored_emojis, "is_stopped": False,
                     "collection_name": col_name, "special_mode": True,
-                    "spawn_group": spawn_group, "hint_bot_id": hint_bot_id,
+                    "spawn_group": spawn_group,
+                    "spawn_groups": spawn_groups,
+                    "hint_bot_id": hint_bot_id,
                     "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX
                 }
                 register_userbot_handlers(temp_client, spawn_group)
+                groups_str = "\n".join(f"   • `{g}`" for g in spawn_groups)
                 await event.reply(
                     f"✅ **Installed (Special Mode)**\n"
                     f"👤 **Name:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n"
-                    f"📍 **Spawn Group:** `{spawn_group}`\n"
+                    f"📍 **Spawn Groups:**\n{groups_str}\n"
                     f"🤖 **Hint Bot:** `{hint_bot_id}`\n"
                     f"⏱️ **Delay:** {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
                     f"🗂️ **DB:** `db['{col_name}']`"
@@ -1100,7 +1117,6 @@ async def startup():
     print("⏳ System starting up...")
     asyncio.create_task(start_dummy_web_server())
 
-    # Start official bot EARLY so error reports can be sent during boot
     try:
         await bot.start(bot_token=BOT_TOKEN)
         print("🤖 Official Bot connected.")
@@ -1108,7 +1124,6 @@ async def startup():
         print(f"❌ Bot start failed: {e}")
         return
 
-    # Notify owner that system started
     try:
         await bot.send_message(OWNER_ID, "🟢 **Auto-catch system starting up...**")
     except Exception:
@@ -1132,6 +1147,9 @@ async def startup():
             is_shuted = acc_doc.get("is_stopped", False)
             special_mode = acc_doc.get("special_mode", False)
             spawn_group = acc_doc.get("spawn_group") if special_mode else None
+            spawn_groups = acc_doc.get("spawn_groups") if special_mode else None
+            if special_mode and not spawn_groups:
+                spawn_groups = [spawn_group] if spawn_group else list(SPECIAL_SPAWN_GROUPS)
             hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
             delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if special_mode else 0.1
             delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if special_mode else 0.1
@@ -1146,11 +1164,12 @@ async def startup():
                         "ignored_emojis": ignored, "is_stopped": is_shuted,
                         "collection_name": col_name, "special_mode": special_mode,
                         "spawn_group": spawn_group if special_mode else waifu_chat_id,
+                        "spawn_groups": spawn_groups if special_mode else None,
                         "hint_bot_id": hint_bot_id if special_mode else None,
                         "delay_min": delay_min, "delay_max": delay_max
                     }
                     register_userbot_handlers(client, waifu_chat_id)
-                    print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode})")
+                    print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode}, groups={spawn_groups})")
                 except Exception as e:
                     print(f"⚠️ Failed to boot {u_id} from db['{col_name}']: {e}")
                     asyncio.create_task(report_error(
@@ -1159,12 +1178,12 @@ async def startup():
 
     print(f"📊 Total online: {len(userbot_instances)}")
 
-    # Summary to owner
     try:
         await bot.send_message(
             OWNER_ID,
             f"🟢 **Startup complete**\n📊 Online userbots: `{len(userbot_instances)}`\n"
-            f"🤖 Hint bots: `{len(hint_bot_ids)}`"
+            f"🤖 Hint bots: `{len(hint_bot_ids)}`\n"
+            f"📍 Special Spawn Groups: `{len(SPECIAL_SPAWN_GROUPS)}`"
         )
     except Exception:
         pass
