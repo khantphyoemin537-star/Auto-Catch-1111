@@ -33,9 +33,15 @@ SPAWN_BOT_ID = 6157455819
 
 SPECIAL_HINT_BOT_ID = 8999491734
 SPECIAL_SPAWN_GROUP = -1003580630981
-SPECIAL_DELAY_MIN = 1.2
-SPECIAL_DELAY_MAX = 2
-SPECIAL_W_REPLY_DELAY = 1.5
+
+# 🎯 TIMING (Human-like, total 4–6 seconds)
+SPECIAL_W_REPLY_DELAY_MIN = 1.5    # /w မလုပ်ခင် အနည်းဆုံး
+SPECIAL_W_REPLY_DELAY_MAX = 2.5    # /w မလုပ်ခင် အများဆုံး
+
+SPECIAL_DELAY_MIN = 2.5            # /catch မပို့ခင် အနည်းဆုံး
+SPECIAL_DELAY_MAX = 3.5            # /catch မပို့ခင် အများဆုံး
+
+SPECIAL_W_REPLY_DELAY = 2.0        # (backward compat fallback)
 
 CGIFT_CHAT_ID = -1003580630981
 CGIFT_WAIT_SEC = 6
@@ -196,11 +202,6 @@ def get_message_text(event):
 # 🧼 INVISIBLE CHARACTER CLEANER
 # ==========================================
 def clean_invisible(text: str) -> str:
-    """
-    Remove all Unicode 'Format' (Cf) chars:
-    ZWJ, ZWNJ, BOM, word joiner, soft hyphen, etc.
-    These are hidden and break string matching.
-    """
     if not text:
         return ""
     try:
@@ -210,12 +211,10 @@ def clean_invisible(text: str) -> str:
 
 
 def is_spawn_message(text: str) -> bool:
-    """Robust spawn detection (invisible-char safe)."""
     if not text:
         return False
     t = clean_invisible(text)
     tl = t.lower()
-    # Multiple fallbacks — one of them will hit
     return (
         "spawned" in tl
         or "sᴘᴀᴡɴᴇᴅ" in tl
@@ -225,7 +224,6 @@ def is_spawn_message(text: str) -> bool:
 
 
 def is_catch_success_message(text: str) -> bool:
-    """Robust catch-success detection."""
     if not text:
         return False
     t = clean_invisible(text)
@@ -421,7 +419,6 @@ async def spawn_detector_handler(event):
     if not text_raw:
         return
 
-    # 🔥 FIX: invisible-char-safe spawn detection
     if not is_spawn_message(text_raw):
         return
 
@@ -441,9 +438,12 @@ async def spawn_detector_handler(event):
 
     try:
         if is_special:
-            await asyncio.sleep(SPECIAL_W_REPLY_DELAY)
+            # 🔥 Human-like /w reply delay (1.5–2.5 sec)
+            w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
+            await asyncio.sleep(w_delay)
             reply_msg = await event.message.reply("/w")
             spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+            print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s")
         else:
             target_chat = config["group_id"]
             fwd_msg = await event.message.forward_to(target_chat)
@@ -492,7 +492,6 @@ async def hint_solver_handler(event):
     if not text_raw:
         return
 
-    # 🔥 Clean invisible chars before regex
     text_clean = clean_invisible(text_raw)
     match = HINT_REGEX.search(text_clean)
     if not match:
@@ -511,7 +510,29 @@ async def hint_solver_handler(event):
     try:
         client_to_use = config["client"]
         if is_special:
+            # 🔥 Human-like delay before /catch (2.5–3.5 sec)
+            delay_time = random.uniform(
+                config.get("delay_min", SPECIAL_DELAY_MIN),
+                config.get("delay_max", SPECIAL_DELAY_MAX)
+            )
+            # Split delay: first half "read", second half "typing"
+            read_time = delay_time * random.uniform(0.4, 0.6)
+            typing_time = max(0.3, delay_time - read_time)
+
+            await asyncio.sleep(read_time)
+
+            try:
+                async with client_to_use.action(target_orig_group, 'typing'):
+                    await asyncio.sleep(typing_time)
+            except Exception:
+                await asyncio.sleep(typing_time)
+
             await client_to_use.send_message(target_orig_group, catch_command)
+            print(
+                f"🥷 [{current_user_id}] /catch sent after "
+                f"read={read_time:.2f}s + typing={typing_time:.2f}s "
+                f"(total={delay_time:.2f}s)"
+            )
         else:
             await asyncio.sleep(0.1)
             async with client_to_use.action(target_orig_group, 'typing'):
@@ -542,7 +563,6 @@ async def catch_success_forwarder_handler(event):
     if not text_raw:
         return
 
-    # 🔥 FIX: invisible-char-safe success detection
     if not is_catch_success_message(text_raw):
         return
 
@@ -1113,8 +1133,8 @@ async def startup():
             special_mode = acc_doc.get("special_mode", False)
             spawn_group = acc_doc.get("spawn_group") if special_mode else None
             hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
-            delay_min = acc_doc.get("delay_min", 0.5) if special_mode else 0.1
-            delay_max = acc_doc.get("delay_max", 1) if special_mode else 0.1
+            delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if special_mode else 0.1
+            delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if special_mode else 0.1
 
             if session_str and waifu_chat_id:
                 try:
@@ -1133,7 +1153,6 @@ async def startup():
                     print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode})")
                 except Exception as e:
                     print(f"⚠️ Failed to boot {u_id} from db['{col_name}']: {e}")
-                    # Report boot failure to owner DM
                     asyncio.create_task(report_error(
                         f"boot[{col_name}][{u_id}]", e, f"session_start_failed"
                     ))
