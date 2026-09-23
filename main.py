@@ -69,6 +69,9 @@ bot_state = {
 }
 cgift_state = {}
 
+# 🆕 List of successfully loaded userbots (for /listbots)
+loaded_userbots = []   # [{u_id, name, username, phone, col_name, special_mode}]
+
 # MongoDB
 client_mongo = AsyncIOMotorClient(MONGO_URI)
 db = client_mongo["telegram_bot"]
@@ -89,8 +92,13 @@ bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 # 🛡️ ERROR REPORTING (DM to OWNER)
 # ==========================================
 async def report_error(context: str, exc: Exception, extra: str = ""):
-    """Send error report to owner DM."""
+    """Send error report to owner DM (skips boot errors)."""
     try:
+        # 🚫 Skip boot errors (invalid sessions) — noisy and not useful
+        if context.startswith("boot[") or "session_start_failed" in extra:
+            print(f"⚠️ [SKIP DM] {context}: {type(exc).__name__}: {exc}")
+            return
+
         tb = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         if len(tb) > 3000:
             tb = tb[-3000:]
@@ -263,6 +271,12 @@ def parse_ids_from_text(text):
     return ids
 
 
+def make_mention(name: str, user_id: int) -> str:
+    """HTML mention."""
+    safe = (name or "User").replace("<", "").replace(">", "").replace("&", "&amp;")
+    return f"<a href='tg://user?id={user_id}'>{safe}</a>"
+
+
 # ==========================================
 # 🎁 CGIFT LOOP
 # ==========================================
@@ -432,7 +446,6 @@ async def spawn_detector_handler(event):
 
     is_special = config.get("special_mode", False)
     if is_special:
-        # 🔥 Support multiple spawn groups
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
@@ -447,7 +460,6 @@ async def spawn_detector_handler(event):
 
     try:
         if is_special:
-            # 🔥 Human-like /w reply delay (1.5–2.5 sec)
             w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
             await asyncio.sleep(w_delay)
             reply_msg = await event.message.reply("/w")
@@ -483,7 +495,6 @@ async def hint_solver_handler(event):
 
     is_special = config.get("special_mode", False)
     if is_special:
-        # 🔥 Support multiple spawn groups
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
@@ -521,7 +532,6 @@ async def hint_solver_handler(event):
     try:
         client_to_use = config["client"]
         if is_special:
-            # 🔥 Human-like delay before /catch (2.5–3.5 sec)
             delay_time = random.uniform(
                 config.get("delay_min", SPECIAL_DELAY_MIN),
                 config.get("delay_max", SPECIAL_DELAY_MAX)
@@ -612,6 +622,39 @@ def register_userbot_handlers(client, waifu_chat_id):
 
 
 # ==========================================
+# 🆕 LIST BUILDER
+# ==========================================
+async def build_loaded_list() -> str:
+    """Return formatted list of all loaded userbots."""
+    if not loaded_userbots:
+        return "📭 No userbots loaded."
+
+    # Sort by name (case-insensitive)
+    rows = sorted(loaded_userbots, key=lambda x: (x.get("name") or "").lower())
+
+    lines = [f"🤖 **Loaded Userbots: {len(rows)}**\n"]
+    for i, info in enumerate(rows, 1):
+        u_id = info.get("u_id")
+        name = info.get("name") or "No Name"
+        uname = info.get("username")
+        phone = info.get("phone") or "—"
+        col_name = info.get("col_name") or "?"
+        special = info.get("special_mode", False)
+
+        mention = make_mention(name, u_id)
+        uname_str = f" (@{uname})" if uname else ""
+        mode_str = "🥷 Special" if special else "🌐 Normal"
+
+        lines.append(
+            f"{i}. {mention}{uname_str}\n"
+            f"   🆔 `{u_id}`\n"
+            f"   📱 `{phone}`\n"
+            f"   🗂️ `{col_name}` — {mode_str}"
+        )
+    return "\n".join(lines)
+
+
+# ==========================================
 # 🤖 OFFICIAL BOT COMMAND HANDLER
 # ==========================================
 @bot.on(events.NewMessage(chats=[SPECIFIC_GROUP, OWNER_ID]))
@@ -643,8 +686,28 @@ async def handle_bot_commands(event):
                 await event.reply(f"✅ **Saved {len(ids)} IDs** for `{target_uid}`\n📊 Total: `{total}`")
             return
 
+        # ---------- 🆕 /listbots ----------
+        if cmd == "/listbots":
+            msg = await build_loaded_list()
+            # Split if too long (Telegram limit 4096)
+            if len(msg) > 4000:
+                chunks = []
+                cur = ""
+                for line in msg.split("\n"):
+                    if len(cur) + len(line) + 1 > 4000:
+                        chunks.append(cur)
+                        cur = line
+                    else:
+                        cur = (cur + "\n" + line) if cur else line
+                if cur:
+                    chunks.append(cur)
+                for ch in chunks:
+                    await event.reply(ch, parse_mode="html")
+            else:
+                await event.reply(msg, parse_mode="html")
+
         # ---------- 👀 /peek ----------
-        if cmd == "/peek":
+        elif cmd == "/peek":
             if not args:
                 await event.reply(
                     "⚠️ **Usage:**\n"
@@ -916,14 +979,28 @@ async def handle_bot_commands(event):
                     "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX
                 }
                 register_userbot_handlers(temp_client, spawn_group)
+
+                # 🆕 Track for /listbots
+                loaded_userbots.append({
+                    "u_id": u_id,
+                    "name": me.first_name or "No Name",
+                    "username": me.username,
+                    "phone": me.phone if me.phone else None,
+                    "col_name": col_name,
+                    "special_mode": True,
+                })
+
                 groups_str = "\n".join(f"   • `{g}`" for g in spawn_groups)
+                mention = make_mention(me.first_name or "User", u_id)
                 await event.reply(
                     f"✅ **Installed (Special Mode)**\n"
-                    f"👤 **Name:** {me.first_name}\n🆔 **User ID:** `{u_id}`\n"
+                    f"👤 **Name:** {mention}\n🆔 **User ID:** `{u_id}`\n"
+                    f"📱 **Phone:** `{me.phone if me.phone else '—'}`\n"
                     f"📍 **Spawn Groups:**\n{groups_str}\n"
                     f"🤖 **Hint Bot:** `{hint_bot_id}`\n"
                     f"⏱️ **Delay:** {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
-                    f"🗂️ **DB:** `db['{col_name}']`"
+                    f"🗂️ **DB:** `db['{col_name}']`",
+                    parse_mode="html"
                 )
             except Exception as e:
                 await event.reply(f"❌ **Userbot connect failed:** {e}")
@@ -980,10 +1057,25 @@ async def handle_bot_commands(event):
                     "collection_name": col_name
                 }
                 register_userbot_handlers(temp_client, waifu_chat_id)
+
+                # 🆕 Track for /listbots
+                loaded_userbots.append({
+                    "u_id": u_id,
+                    "name": me.first_name or "No Name",
+                    "username": me.username,
+                    "phone": me.phone if me.phone else None,
+                    "col_name": col_name,
+                    "special_mode": False,
+                })
+
+                mention = make_mention(me.first_name or "User", u_id)
                 await event.reply(
-                    f"✅ **Installed**\n👤 **Name:** {me.first_name}\n"
-                    f"🆔 **User ID:** `{u_id}`\n🌐 **Waifu Chat:** `{waifu_chat_id}`\n"
-                    f"🗂️ **DB:** `db['{col_name}']`"
+                    f"✅ **Installed**\n👤 **Name:** {mention}\n"
+                    f"🆔 **User ID:** `{u_id}`\n"
+                    f"📱 **Phone:** `{me.phone if me.phone else '—'}`\n"
+                    f"🌐 **Waifu Chat:** `{waifu_chat_id}`\n"
+                    f"🗂️ **DB:** `db['{col_name}']`",
+                    parse_mode="html"
                 )
             except Exception as e:
                 await event.reply(f"❌ **Userbot connect failed:** {e}")
@@ -1134,6 +1226,7 @@ async def startup():
         if h_id:
             hint_bot_ids.add(h_id)
 
+    failed_count = 0
     async for reg_doc in registry_col.find():
         col_name = reg_doc.get("collection_name")
         if not col_name:
@@ -1158,6 +1251,7 @@ async def startup():
                 try:
                     client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
                     await client.start()
+                    me = await client.get_me()
                     client.tg_user_id = u_id
                     userbot_instances[u_id] = {
                         "client": client, "group_id": waifu_chat_id,
@@ -1169,24 +1263,61 @@ async def startup():
                         "delay_min": delay_min, "delay_max": delay_max
                     }
                     register_userbot_handlers(client, waifu_chat_id)
+
+                    # 🆕 Track for /listbots
+                    loaded_userbots.append({
+                        "u_id": u_id,
+                        "name": me.first_name or "No Name",
+                        "username": me.username,
+                        "phone": me.phone if me.phone else None,
+                        "col_name": col_name,
+                        "special_mode": special_mode,
+                    })
+
                     print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode}, groups={spawn_groups})")
                 except Exception as e:
-                    print(f"⚠️ Failed to boot {u_id} from db['{col_name}']: {e}")
-                    asyncio.create_task(report_error(
-                        f"boot[{col_name}][{u_id}]", e, f"session_start_failed"
-                    ))
+                    failed_count += 1
+                    # 🔇 Silent log only — DO NOT DM owner
+                    print(f"⚠️ [BOOT FAIL] {u_id} from db['{col_name}']: {type(e).__name__}: {e}")
 
-    print(f"📊 Total online: {len(userbot_instances)}")
+    print(f"📊 Total online: {len(userbot_instances)} | Failed: {failed_count}")
 
+    # 🆕 Send summary + full list
     try:
-        await bot.send_message(
-            OWNER_ID,
-            f"🟢 **Startup complete**\n📊 Online userbots: `{len(userbot_instances)}`\n"
+        summary = (
+            f"🟢 **Startup complete**\n"
+            f"📊 Online userbots: `{len(userbot_instances)}`\n"
+            f"❌ Failed: `{failed_count}`\n"
             f"🤖 Hint bots: `{len(hint_bot_ids)}`\n"
-            f"📍 Special Spawn Groups: `{len(SPECIAL_SPAWN_GROUPS)}`"
+            f"📍 Special Spawn Groups: `{len(SPECIAL_SPAWN_GROUPS)}`\n"
+            f"💡 Send `/listbots` to see all loaded userbots."
         )
+        await bot.send_message(OWNER_ID, summary)
     except Exception:
         pass
+
+    # 🆕 Auto-send list on startup (if not too many)
+    try:
+        if loaded_userbots:
+            list_msg = await build_loaded_list()
+            if len(list_msg) > 4000:
+                chunks = []
+                cur = ""
+                for line in list_msg.split("\n"):
+                    if len(cur) + len(line) + 1 > 4000:
+                        chunks.append(cur)
+                        cur = line
+                    else:
+                        cur = (cur + "\n" + line) if cur else line
+                if cur:
+                    chunks.append(cur)
+                for ch in chunks:
+                    await bot.send_message(OWNER_ID, ch, parse_mode="html")
+                    await asyncio.sleep(1)
+            else:
+                await bot.send_message(OWNER_ID, list_msg, parse_mode="html")
+    except Exception as e:
+        print(f"⚠️ Failed to send userbot list: {e}")
 
     print("🤖 Official Bot running...")
     await bot.run_until_disconnected()
