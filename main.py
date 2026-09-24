@@ -33,14 +33,20 @@ SPAWN_BOT_ID = 6157455819
 
 SPECIAL_HINT_BOT_ID = 8999491734
 
-# 🔥 Special Mode Spawn Groups (multiple)
+# 🔥 Special Mode Spawn Groups (multiple) — for /addautospecial ONLY
 SPECIAL_SPAWN_GROUPS = [
     -1003580630981,
-    -1003967256441,   # 🆕 NEW (private restricted)
+    -1003967256441,   # private restricted
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
-# 🎯 TIMING (Human-like, total 4–6 seconds)
+# 🆕 DM-Bulk MODE CONFIG (for /cmd & /adddm)
+DM_HINT_BOT_ID = 8999491734
+
+# Chats that must always be ignored (both modes)
+BLOCKED_CHATS = [-1001947407820, -1003067509608, -1003760110058]
+
+# 🎯 TIMING (Human-like)
 SPECIAL_W_REPLY_DELAY_MIN = 1.5
 SPECIAL_W_REPLY_DELAY_MAX = 2.5
 
@@ -66,11 +72,13 @@ HINT_REGEX = re.compile(r"(/catch(?:@\w+)?\s+[^\n]+)")
 bot_state = {
     "selected_user_id": None,
     "save_mode": False,
+    "session_save_mode": False,   # /cmd save mode
+    "session_save_col": None,     # collection name
 }
 cgift_state = {}
 
-# 🆕 List of successfully loaded userbots (for /listbots)
-loaded_userbots = []   # [{u_id, name, username, phone, col_name, special_mode}]
+# List of successfully loaded userbots (for /listbots)
+loaded_userbots = []   # [{u_id, name, username, phone, col_name, special_mode, dm_mode}]
 
 # MongoDB
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -94,7 +102,6 @@ bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 async def report_error(context: str, exc: Exception, extra: str = ""):
     """Send error report to owner DM (skips boot errors)."""
     try:
-        # 🚫 Skip boot errors (invalid sessions) — noisy and not useful
         if context.startswith("boot[") or "session_start_failed" in extra:
             print(f"⚠️ [SKIP DM] {context}: {type(exc).__name__}: {exc}")
             return
@@ -271,10 +278,62 @@ def parse_ids_from_text(text):
     return ids
 
 
+def parse_user_ids_from_text(text):
+    """Extract all 6+ digit numbers (Telegram user IDs) from any text."""
+    if not text:
+        return []
+    return re.findall(r'\b\d{6,}\b', text)
+
+
 def make_mention(name: str, user_id: int) -> str:
-    """HTML mention."""
     safe = (name or "User").replace("<", "").replace(">", "").replace("&", "&amp;")
     return f"<a href='tg://user?id={user_id}'>{safe}</a>"
+
+
+# ==========================================
+# 🆕 SESSION PARSER (for /cmd save mode)
+# ==========================================
+SESSION_LINE_RE = re.compile(r"^\d+$")
+
+def extract_sessions_from_text(text: str):
+    """
+    Parse session entries from a block of text.
+
+    Supported formats per line:
+      • "<user_id> <session_string>"
+      • "<session_string>"
+      • "# comment lines" skipped (Sessions.txt export safe)
+
+    Returns a list of tuples: [(user_id_or_None, session_string), ...]
+    """
+    results = []
+    if not text:
+        return results
+
+    for raw_line in text.split("\n"):
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("#"):
+            continue
+        if line.startswith("//"):
+            continue
+
+        # Try "user_id session_string"
+        parts = line.split(maxsplit=1)
+        if len(parts) == 2 and SESSION_LINE_RE.match(parts[0]) and len(parts[1]) > 50:
+            try:
+                uid = int(parts[0])
+                results.append((uid, parts[1].strip()))
+                continue
+            except Exception:
+                pass
+
+        # Fallback: whole line is a session string
+        if len(line) > 50 and " " not in line:
+            results.append((None, line))
+
+    return results
 
 
 # ==========================================
@@ -445,26 +504,69 @@ async def spawn_detector_handler(event):
     text_clean = clean_invisible(text_raw)
 
     is_special = config.get("special_mode", False)
-    if is_special:
+    is_dm = config.get("dm_mode", False)
+
+    # ── Blocked chats always skipped ──
+    if event.chat_id in BLOCKED_CHATS:
+        return
+
+    # ═══════════════════════════════════════════════
+    # 🆕 DM-BULK MODE (from /cmd or /adddm):
+    #    • Listen to ALL groups
+    #    • Blacklist only (ignored_emojis via /emoji)
+    # ═══════════════════════════════════════════════
+    if is_dm:
+        if any(emoji in text_clean for emoji in config["ignored_emojis"]):
+            return
+
+    # ═══════════════════════════════════════════════
+    # SPECIAL MODE — unchanged behavior (for /addautospecial)
+    # ═══════════════════════════════════════════════
+    elif is_special:
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
-    if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
-        return
-    if any(emoji in text_clean for emoji in config["ignored_emojis"]):
-        return
+        if any(emoji in text_clean for emoji in config["ignored_emojis"]):
+            return
+
+    # ═══════════════════════════════════════════════
+    # NORMAL MODE — unchanged behavior (for /addauto)
+    # ═══════════════════════════════════════════════
+    else:
+        if any(emoji in text_clean for emoji in config["ignored_emojis"]):
+            return
 
     orig_chat_id = event.chat_id
     latest_spawn[current_user_id] = orig_chat_id
     latest_spawn_msg[current_user_id] = event.message.id
 
     try:
-        if is_special:
+        if is_dm:
+            # DM MODE: forward media+caption → hint bot DM (NO /w)
+            hint_bot_id = config["hint_bot_id"]
+            try:
+                fwd = await event.client.forward_messages(hint_bot_id, event.message)
+                fwd_id = fwd[0].id if isinstance(fwd, list) else fwd.id
+            except Exception:
+                try:
+                    fwd = await event.client.send_message(hint_bot_id, event.message)
+                    fwd_id = fwd.id
+                except Exception as inner:
+                    print(f"❌ DM forward/copy failed for {current_user_id}: {inner}")
+                    await report_error("spawn_detector.dm_forward", inner,
+                                       f"uid={current_user_id} hint={hint_bot_id}")
+                    return
+            spawn_tracker[(current_user_id, fwd_id)] = orig_chat_id
+            print(f"📨 [{current_user_id}] DM-mode → hint bot {hint_bot_id} "
+                  f"(orig={orig_chat_id}, fwd_id={fwd_id})")
+
+        elif is_special:
             w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
             await asyncio.sleep(w_delay)
             reply_msg = await event.message.reply("/w")
             spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
             print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s in {orig_chat_id}")
+
         else:
             target_chat = config["group_id"]
             fwd_msg = await event.message.forward_to(target_chat)
@@ -494,7 +596,21 @@ async def hint_solver_handler(event):
         return
 
     is_special = config.get("special_mode", False)
-    if is_special:
+    is_dm = config.get("dm_mode", False)
+
+    # ── Route filtering ──
+    if is_dm:
+        hint_bot_id = config["hint_bot_id"]
+        if event.chat_id != hint_bot_id:
+            return
+        if event.sender_id != hint_bot_id:
+            return
+        if not event.reply_to_msg_id:
+            return
+        if (current_user_id, event.reply_to_msg_id) not in spawn_tracker:
+            return
+
+    elif is_special:
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
@@ -504,6 +620,7 @@ async def hint_solver_handler(event):
             return
         if (current_user_id, event.reply_to_msg_id) not in spawn_tracker:
             return
+
     else:
         if event.sender_id not in hint_bot_ids:
             return
@@ -531,7 +648,8 @@ async def hint_solver_handler(event):
 
     try:
         client_to_use = config["client"]
-        if is_special:
+
+        if is_dm:
             delay_time = random.uniform(
                 config.get("delay_min", SPECIAL_DELAY_MIN),
                 config.get("delay_max", SPECIAL_DELAY_MAX)
@@ -540,7 +658,27 @@ async def hint_solver_handler(event):
             typing_time = max(0.3, delay_time - read_time)
 
             await asyncio.sleep(read_time)
+            try:
+                async with client_to_use.action(target_orig_group, 'typing'):
+                    await asyncio.sleep(typing_time)
+            except Exception:
+                await asyncio.sleep(typing_time)
 
+            await client_to_use.send_message(target_orig_group, catch_command)
+            print(
+                f"📨 [{current_user_id}] DM-mode /catch sent → {target_orig_group} "
+                f"(read={read_time:.2f}s + typing={typing_time:.2f}s)"
+            )
+
+        elif is_special:
+            delay_time = random.uniform(
+                config.get("delay_min", SPECIAL_DELAY_MIN),
+                config.get("delay_max", SPECIAL_DELAY_MAX)
+            )
+            read_time = delay_time * random.uniform(0.4, 0.6)
+            typing_time = max(0.3, delay_time - read_time)
+
+            await asyncio.sleep(read_time)
             try:
                 async with client_to_use.action(target_orig_group, 'typing'):
                     await asyncio.sleep(typing_time)
@@ -559,6 +697,7 @@ async def hint_solver_handler(event):
                 await asyncio.sleep(0.5)
             sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
             asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
+
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
         await report_error(
@@ -576,7 +715,7 @@ async def catch_success_forwarder_handler(event):
     config = userbot_instances.get(current_user_id, {})
     if config.get("is_stopped"):
         return
-    if config.get("special_mode", False):
+    if config.get("special_mode", False) or config.get("dm_mode", False):
         return
 
     text_raw = get_message_text(event)
@@ -625,11 +764,9 @@ def register_userbot_handlers(client, waifu_chat_id):
 # 🆕 LIST BUILDER
 # ==========================================
 async def build_loaded_list() -> str:
-    """Return formatted list of all loaded userbots."""
     if not loaded_userbots:
         return "📭 No userbots loaded."
 
-    # Sort by name (case-insensitive)
     rows = sorted(loaded_userbots, key=lambda x: (x.get("name") or "").lower())
 
     lines = [f"🤖 **Loaded Userbots: {len(rows)}**\n"]
@@ -640,10 +777,16 @@ async def build_loaded_list() -> str:
         phone = info.get("phone") or "—"
         col_name = info.get("col_name") or "?"
         special = info.get("special_mode", False)
+        dm = info.get("dm_mode", False)
 
         mention = make_mention(name, u_id)
         uname_str = f" (@{uname})" if uname else ""
-        mode_str = "🥷 Special" if special else "🌐 Normal"
+        if dm:
+            mode_str = "📨 DM-Bulk"
+        elif special:
+            mode_str = "🥷 Special"
+        else:
+            mode_str = "🌐 Normal"
 
         lines.append(
             f"{i}. {mention}{uname_str}\n"
@@ -652,6 +795,99 @@ async def build_loaded_list() -> str:
             f"   🗂️ `{col_name}` — {mode_str}"
         )
     return "\n".join(lines)
+
+
+# ==========================================
+# 🆕 /cmd SESSION SAVE HELPER (DM-Bulk mode)
+# ==========================================
+async def save_one_session(session_str: str, target_uid, col_name: str):
+    """
+    Save a single session to db[col_name] as DM-Bulk mode userbot.
+    DM-Bulk:
+      • listens to ALL groups (no group restriction)
+      • only blacklist emoji filter (via /emoji)
+      • forwards spawn msg to hint bot DM (NO /w)
+    Returns (ok: bool, uid or None, error_msg or None).
+    """
+    temp_client = None
+    try:
+        temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+        await temp_client.start()
+        me = await temp_client.get_me()
+        real_uid = me.id
+
+        if target_uid and int(target_uid) != real_uid:
+            print(f"⚠️ Declared uid {target_uid} != real {real_uid}; using real.")
+
+        ignored_emojis = ["🔵", "🟣", "🟡", "🟠", "💮"]  # default blacklist
+        spawn_groups = None   # None = all groups
+
+        custom_col = db[col_name]
+        await custom_col.update_one(
+            {"user_id": real_uid},
+            {"$set": {
+                "user_id": real_uid,
+                "session": session_str,
+                "group_id": None,
+                "ignored_emojis": ignored_emojis,
+                "is_stopped": False,
+                "collection_name": col_name,
+                "dm_mode": True,
+                "spawn_group": None,
+                "spawn_groups": spawn_groups,
+                "hint_bot_id": DM_HINT_BOT_ID,
+                "delay_min": SPECIAL_DELAY_MIN,
+                "delay_max": SPECIAL_DELAY_MAX,
+            }},
+            upsert=True
+        )
+        await registry_col.update_one(
+            {"collection_name": col_name},
+            {"$set": {"collection_name": col_name}},
+            upsert=True
+        )
+
+        if real_uid not in userbot_instances:
+            temp_client.tg_user_id = real_uid
+            userbot_instances[real_uid] = {
+                "client": temp_client,
+                "group_id": None,
+                "ignored_emojis": ignored_emojis,
+                "is_stopped": False,
+                "collection_name": col_name,
+                "special_mode": False,
+                "dm_mode": True,
+                "spawn_group": None,
+                "spawn_groups": spawn_groups,
+                "hint_bot_id": DM_HINT_BOT_ID,
+                "delay_min": SPECIAL_DELAY_MIN,
+                "delay_max": SPECIAL_DELAY_MAX,
+            }
+            register_userbot_handlers(temp_client, None)
+
+            loaded_userbots.append({
+                "u_id": real_uid,
+                "name": me.first_name or "No Name",
+                "username": me.username,
+                "phone": me.phone if me.phone else None,
+                "col_name": col_name,
+                "special_mode": False,
+                "dm_mode": True,
+            })
+        else:
+            try:
+                await temp_client.disconnect()
+            except Exception:
+                pass
+
+        return True, real_uid, None
+    except Exception as e:
+        try:
+            if temp_client:
+                await temp_client.disconnect()
+        except Exception:
+            pass
+        return False, None, f"{type(e).__name__}: {e}"
 
 
 # ==========================================
@@ -671,7 +907,120 @@ async def handle_bot_commands(event):
 
         cmd, args = get_cmd_and_args(text)
 
-        # ---------- 🎁 SAVE MODE ----------
+        # ══════════════════════════════════════════
+        # 🆕 /cmd SESSION SAVE MODE (checks BEFORE other handlers)
+        # ══════════════════════════════════════════
+        if bot_state["session_save_mode"] and not text.startswith("/"):
+            col_name = bot_state["session_save_col"]
+            parsed = extract_sessions_from_text(text)
+            if not parsed:
+                await event.reply(
+                    "⚠️ **No sessions detected in message.**\n"
+                    "Send in format `user_id session_string` per line, "
+                    "or one session per line.\n"
+                    "Send `/cmd off` to exit."
+                )
+                return
+
+            await event.reply(
+                f"⏳ **Processing {len(parsed)} session(s)** → `db['{col_name}']`..."
+            )
+            ok_count = 0
+            fail_count = 0
+            ok_lines = []
+            fail_lines = []
+
+            for idx, (declared_uid, sess) in enumerate(parsed, 1):
+                ok, real_uid, err = await save_one_session(sess, declared_uid, col_name)
+                if ok:
+                    ok_count += 1
+                    ok_lines.append(f"✅ `{real_uid}`")
+                else:
+                    fail_count += 1
+                    short_sess = sess[:25] + "..."
+                    fail_lines.append(f"❌ #{idx} `{short_sess}` → `{err[:120]}`")
+
+                await asyncio.sleep(1.5)
+
+            summary = (
+                f"📊 **Session Save Summary**\n"
+                f"🗂️ Collection: `db['{col_name}']`\n"
+                f"✅ **Saved:** `{ok_count}`\n"
+                f"❌ **Failed:** `{fail_count}`\n"
+            )
+            if ok_lines:
+                summary += "\n**Saved IDs:**\n" + "\n".join(ok_lines[:30])
+            if fail_lines:
+                summary += "\n\n**Failures:**\n" + "\n".join(fail_lines[:15])
+            summary += "\n\n💡 Send more sessions or `/cmd off` to exit."
+            await event.reply(summary)
+            return
+
+        # ---------- 🆕 /cmd ----------
+        if cmd == "/cmd":
+            sub = (args or "").strip().lower()
+
+            if sub == "off":
+                if not bot_state["session_save_mode"]:
+                    await event.reply("ℹ️ **Session save mode is already OFF.**")
+                    return
+                col = bot_state["session_save_col"]
+                bot_state["session_save_mode"] = False
+                bot_state["session_save_col"] = None
+                await event.reply(f"📤 **Session save mode OFF** (was `db['{col}']`)")
+                return
+
+            if sub == "status":
+                if bot_state["session_save_mode"]:
+                    col = bot_state["session_save_col"]
+                    await event.reply(
+                        f"🟢 **Session save mode ON**\n"
+                        f"🗂️ Collection: `db['{col}']`\n"
+                        f"💡 Send sessions in DM now, or `/cmd off` to exit."
+                    )
+                else:
+                    await event.reply("🔴 **Session save mode OFF.**")
+                return
+
+            # /cmd [collection]
+            if not event.is_private:
+                await event.reply("⚠️ **Please use `/cmd` in the bot's DM.**")
+                return
+
+            col_name = (args or "").strip()
+            if not col_name:
+                await event.reply(
+                    "⚠️ **Usage:**\n"
+                    "`/cmd [collection_name]` — start session save mode\n"
+                    "`/cmd off` — stop save mode\n"
+                    "`/cmd status` — show current state\n\n"
+                    "**Mode:** DM-Bulk (all groups, blacklist via `/emoji`)\n\n"
+                    "**Session format (send after starting):**\n"
+                    "```\n"
+                    "user_id session_string\n"
+                    "user_id session_string\n"
+                    "```\n"
+                    "Or just one session string per line.\n"
+                    "Lines starting with `#` are skipped (Sessions.txt export safe)."
+                )
+                return
+
+            if not re.match(r"^[A-Za-z0-9_]+$", col_name):
+                await event.reply("❌ **Collection name must be alphanumeric/underscore only.**")
+                return
+
+            bot_state["session_save_mode"] = True
+            bot_state["session_save_col"] = col_name
+            await event.reply(
+                f"🟢 **Session save mode ON**\n"
+                f"🗂️ Target: `db['{col_name}']`\n"
+                f"📥 Send sessions now (one per line, or `user_id session_string`).\n"
+                f"🎯 Mode: **DM-Bulk** — All groups\n"
+                f"🛑 Send `/cmd off` when done."
+            )
+            return
+
+        # ---------- 🎁 SAVE MODE (cgift IDs) ----------
         if bot_state["save_mode"] and bot_state["selected_user_id"] and not text.startswith("/"):
             ids = parse_ids_from_text(text)
             if ids:
@@ -689,7 +1038,6 @@ async def handle_bot_commands(event):
         # ---------- 🆕 /listbots ----------
         if cmd == "/listbots":
             msg = await build_loaded_list()
-            # Split if too long (Telegram limit 4096)
             if len(msg) > 4000:
                 chunks = []
                 cur = ""
@@ -920,7 +1268,7 @@ async def handle_bot_commands(event):
             except Exception as e:
                 await event.reply(f"❌ **Failed:** {e}")
 
-        # ---------- /addautospecial ----------
+        # ---------- /addautospecial ----------  (UNCHANGED)
         elif cmd == "/addautospecial":
             if not event.is_private:
                 await event.reply("⚠️ **Please use this command in the bot's DM.**")
@@ -980,7 +1328,6 @@ async def handle_bot_commands(event):
                 }
                 register_userbot_handlers(temp_client, spawn_group)
 
-                # 🆕 Track for /listbots
                 loaded_userbots.append({
                     "u_id": u_id,
                     "name": me.first_name or "No Name",
@@ -1005,7 +1352,93 @@ async def handle_bot_commands(event):
             except Exception as e:
                 await event.reply(f"❌ **Userbot connect failed:** {e}")
 
-        # ---------- /addauto ----------
+        # ---------- /adddm ----------  (DM-Bulk mode)
+        elif cmd == "/adddm":
+            if not event.is_private:
+                await event.reply("⚠️ **Please use this command in the bot's DM.**")
+                return
+            parts = args.split(maxsplit=1)
+            if len(parts) < 1:
+                await event.reply("⚠️ **Usage:** `/adddm [Collection] [Session]`")
+                return
+            col_name = parts[0].strip()
+            session_str = parts[1].strip() if len(parts) > 1 else None
+            if not session_str and event.is_reply:
+                r = await event.get_reply_message()
+                if r and r.text:
+                    session_str = r.text.strip()
+            if not session_str:
+                await event.reply("❌ **String Session not found.**")
+                return
+            await event.reply(f"⏳ Checking DM-Bulk userbot → `db['{col_name}']`...")
+            try:
+                temp_client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+                await temp_client.start()
+                me = await temp_client.get_me()
+                u_id = me.id
+                temp_client.tg_user_id = u_id
+                ignored_emojis = ["🔵", "🟣", "🟡", "🟠", "💮"]  # default blacklist
+                spawn_groups = None   # None = all groups
+                custom_col = db[col_name]
+                await custom_col.update_one(
+                    {"user_id": u_id},
+                    {"$set": {
+                        "user_id": u_id, "session": session_str,
+                        "group_id": None, "ignored_emojis": ignored_emojis,
+                        "is_stopped": False, "collection_name": col_name,
+                        "dm_mode": True,
+                        "spawn_group": None,
+                        "spawn_groups": spawn_groups,
+                        "hint_bot_id": DM_HINT_BOT_ID,
+                        "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX,
+                    }},
+                    upsert=True
+                )
+                await registry_col.update_one(
+                    {"collection_name": col_name},
+                    {"$set": {"collection_name": col_name}},
+                    upsert=True
+                )
+                userbot_instances[u_id] = {
+                    "client": temp_client, "group_id": None,
+                    "ignored_emojis": ignored_emojis, "is_stopped": False,
+                    "collection_name": col_name,
+                    "special_mode": False,
+                    "dm_mode": True,
+                    "spawn_group": None,
+                    "spawn_groups": spawn_groups,
+                    "hint_bot_id": DM_HINT_BOT_ID,
+                    "delay_min": SPECIAL_DELAY_MIN, "delay_max": SPECIAL_DELAY_MAX,
+                }
+                register_userbot_handlers(temp_client, None)
+
+                loaded_userbots.append({
+                    "u_id": u_id,
+                    "name": me.first_name or "No Name",
+                    "username": me.username,
+                    "phone": me.phone if me.phone else None,
+                    "col_name": col_name,
+                    "special_mode": False,
+                    "dm_mode": True,
+                })
+
+                mention = make_mention(me.first_name or "User", u_id)
+                await event.reply(
+                    f"✅ **Installed (DM-Bulk Mode)**\n"
+                    f"👤 **Name:** {mention}\n🆔 **User ID:** `{u_id}`\n"
+                    f"📱 **Phone:** `{me.phone if me.phone else '—'}`\n"
+                    f"📍 **Groups:** ALL\n"
+                    f"🚫 **Ignored emojis:** `{' '.join(ignored_emojis)}`\n"
+                    f"🤖 **Hint Bot (DM):** `{DM_HINT_BOT_ID}`\n"
+                    f"⏱️ **Delay:** {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
+                    f"🗂️ **DB:** `db['{col_name}']`\n"
+                    f"💡 Use `/emoji` to change blacklist (single or bulk)",
+                    parse_mode="html"
+                )
+            except Exception as e:
+                await event.reply(f"❌ **Userbot connect failed:** {e}")
+
+        # ---------- /addauto ----------  (UNCHANGED)
         elif cmd == "/addauto":
             if not event.is_private:
                 await event.reply("⚠️ **Please use this command in the bot's DM.**")
@@ -1058,7 +1491,6 @@ async def handle_bot_commands(event):
                 }
                 register_userbot_handlers(temp_client, waifu_chat_id)
 
-                # 🆕 Track for /listbots
                 loaded_userbots.append({
                     "u_id": u_id,
                     "name": me.first_name or "No Name",
@@ -1116,11 +1548,86 @@ async def handle_bot_commands(event):
             else:
                 await event.reply("❌ **Userbot not found.**")
 
-        # ---------- /emoji ----------
+        # ---------- 🆕 /emoji (SINGLE + BULK) ----------
         elif cmd == "/emoji":
+            # ══════════════════════════════════════════
+            # 🆕 BULK MODE — reply to a message with user IDs
+            # ══════════════════════════════════════════
+            if event.is_reply:
+                r = await event.get_reply_message()
+                if not r or not r.text:
+                    await event.reply(
+                        "⚠️ **Replied message has no text with user IDs.**"
+                    )
+                    return
+
+                user_ids = parse_user_ids_from_text(r.text)
+                if not user_ids:
+                    await event.reply(
+                        "⚠️ **No valid user IDs found in replied message.**\n"
+                        "Make sure the message contains 6+ digit Telegram IDs."
+                    )
+                    return
+
+                if not args:
+                    await event.reply(
+                        "⚠️ **Usage (Bulk):**\n"
+                        "Reply to a message with user IDs, then send:\n"
+                        "`/emoji 🟡💮`"
+                    )
+                    return
+
+                custom_emojis = list(args.replace(" ", ""))
+                if not custom_emojis:
+                    await event.reply("⚠️ **No emojis provided.**")
+                    return
+
+                ok_count = 0
+                fail_count = 0
+                fail_lines = []
+
+                for uid_str in user_ids:
+                    try:
+                        target_uid = int(uid_str)
+                    except ValueError:
+                        continue
+
+                    if target_uid not in userbot_instances:
+                        fail_count += 1
+                        fail_lines.append(f"❌ `{target_uid}` — not online")
+                        continue
+
+                    col_name = userbot_instances[target_uid]["collection_name"]
+                    userbot_instances[target_uid]["ignored_emojis"] = custom_emojis
+                    await db[col_name].update_one(
+                        {"user_id": target_uid},
+                        {"$set": {"ignored_emojis": custom_emojis}}
+                    )
+                    ok_count += 1
+
+                emoji_str = " ".join(custom_emojis)
+                result = (
+                    f"✅ **Bulk /emoji applied**\n"
+                    f"🚫 **Ignored:** `{emoji_str}`\n"
+                    f"📊 **Total IDs:** `{len(user_ids)}`\n"
+                    f"✅ **Updated:** `{ok_count}`\n"
+                    f"❌ **Failed:** `{fail_count}`\n"
+                )
+                if fail_lines:
+                    result += "\n**Details:**\n" + "\n".join(fail_lines[:20])
+                await event.reply(result)
+                return
+
+            # ══════════════════════════════════════════
+            # SINGLE MODE — /emoji [user_id] [emojis]
+            # ══════════════════════════════════════════
             parts = args.split(maxsplit=1)
             if len(parts) < 2:
-                await event.reply("⚠️ **Usage:** `/emoji [user_id] [emoji_list]`")
+                await event.reply(
+                    "⚠️ **Usage:**\n"
+                    "**Single:** `/emoji [user_id] [emojis]`\n"
+                    "**Bulk:** Reply to a message with user IDs, then `/emoji [emojis]`"
+                )
                 return
             try:
                 target_uid = int(parts[0])
@@ -1132,7 +1639,7 @@ async def handle_bot_commands(event):
                 col_name = userbot_instances[target_uid]["collection_name"]
                 userbot_instances[target_uid]["ignored_emojis"] = custom_emojis
                 await db[col_name].update_one({"user_id": target_uid}, {"$set": {"ignored_emojis": custom_emojis}})
-                await event.reply(f"✅ **Updated ignored emojis for `{target_uid}`.**")
+                await event.reply(f"✅ **Updated ignored emojis for `{target_uid}`.**\n🚫 `{' '.join(custom_emojis)}`")
             else:
                 await event.reply("❌ **Userbot not found.**")
 
@@ -1239,32 +1746,52 @@ async def startup():
             ignored = acc_doc.get("ignored_emojis", ["🔵", "🟣", "🟡", "🟠", "💮"])
             is_shuted = acc_doc.get("is_stopped", False)
             special_mode = acc_doc.get("special_mode", False)
-            spawn_group = acc_doc.get("spawn_group") if special_mode else None
-            spawn_groups = acc_doc.get("spawn_groups") if special_mode else None
-            if special_mode and not spawn_groups:
-                spawn_groups = [spawn_group] if spawn_group else list(SPECIAL_SPAWN_GROUPS)
-            hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
-            delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if special_mode else 0.1
-            delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if special_mode else 0.1
+            dm_mode = acc_doc.get("dm_mode", False)
 
-            if session_str and waifu_chat_id:
+            # ── spawn_groups logic ──
+            if dm_mode:
+                # DM-Bulk mode listens to ALL groups
+                spawn_group = None
+                spawn_groups = None
+            elif special_mode:
+                spawn_group = acc_doc.get("spawn_group")
+                spawn_groups = acc_doc.get("spawn_groups")
+                if not spawn_groups:
+                    spawn_groups = [spawn_group] if spawn_group else list(SPECIAL_SPAWN_GROUPS)
+            else:
+                spawn_group = None
+                spawn_groups = None
+
+            hint_bot_id = acc_doc.get("hint_bot_id") if (special_mode or dm_mode) else None
+            if dm_mode and not hint_bot_id:
+                hint_bot_id = DM_HINT_BOT_ID
+
+            delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if (special_mode or dm_mode) else 0.1
+            delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if (special_mode or dm_mode) else 0.1
+
+            # DM mode doesn't need a group_id
+            if session_str and (waifu_chat_id or special_mode or dm_mode):
                 try:
                     client = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
                     await client.start()
                     me = await client.get_me()
                     client.tg_user_id = u_id
                     userbot_instances[u_id] = {
-                        "client": client, "group_id": waifu_chat_id,
-                        "ignored_emojis": ignored, "is_stopped": is_shuted,
-                        "collection_name": col_name, "special_mode": special_mode,
-                        "spawn_group": spawn_group if special_mode else waifu_chat_id,
-                        "spawn_groups": spawn_groups if special_mode else None,
-                        "hint_bot_id": hint_bot_id if special_mode else None,
-                        "delay_min": delay_min, "delay_max": delay_max
+                        "client": client,
+                        "group_id": waifu_chat_id,
+                        "ignored_emojis": ignored,
+                        "is_stopped": is_shuted,
+                        "collection_name": col_name,
+                        "special_mode": special_mode,
+                        "dm_mode": dm_mode,
+                        "spawn_group": spawn_group,
+                        "spawn_groups": spawn_groups,
+                        "hint_bot_id": hint_bot_id,
+                        "delay_min": delay_min,
+                        "delay_max": delay_max,
                     }
                     register_userbot_handlers(client, waifu_chat_id)
 
-                    # 🆕 Track for /listbots
                     loaded_userbots.append({
                         "u_id": u_id,
                         "name": me.first_name or "No Name",
@@ -1272,17 +1799,17 @@ async def startup():
                         "phone": me.phone if me.phone else None,
                         "col_name": col_name,
                         "special_mode": special_mode,
+                        "dm_mode": dm_mode,
                     })
 
-                    print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode}, groups={spawn_groups})")
+                    mode_label = "DM-Bulk" if dm_mode else ("Special" if special_mode else "Normal")
+                    print(f"🚀 Loaded {u_id} from db['{col_name}'] (mode={mode_label})")
                 except Exception as e:
                     failed_count += 1
-                    # 🔇 Silent log only — DO NOT DM owner
                     print(f"⚠️ [BOOT FAIL] {u_id} from db['{col_name}']: {type(e).__name__}: {e}")
 
     print(f"📊 Total online: {len(userbot_instances)} | Failed: {failed_count}")
 
-    # 🆕 Send summary + full list
     try:
         summary = (
             f"🟢 **Startup complete**\n"
@@ -1290,13 +1817,14 @@ async def startup():
             f"❌ Failed: `{failed_count}`\n"
             f"🤖 Hint bots: `{len(hint_bot_ids)}`\n"
             f"📍 Special Spawn Groups: `{len(SPECIAL_SPAWN_GROUPS)}`\n"
-            f"💡 Send `/listbots` to see all loaded userbots."
+            f"💡 Send `/listbots` to see all loaded userbots.\n"
+            f"📥 Use `/cmd [collection]` to save sessions in DM.\n"
+            f"🎯 Use `/emoji` to set ignored emojis (single or bulk via reply)."
         )
         await bot.send_message(OWNER_ID, summary)
     except Exception:
         pass
 
-    # 🆕 Auto-send list on startup (if not too many)
     try:
         if loaded_userbots:
             list_msg = await build_loaded_list()
