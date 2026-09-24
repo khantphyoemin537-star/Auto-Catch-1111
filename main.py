@@ -98,7 +98,6 @@ async def report_error(context: str, exc: Exception, extra: str = ""):
         print(f"❌ [{context}] {type(exc).__name__}: {exc}")
         if extra:
             print(f"   ℹ️ {extra}")
-        # keep only tail of traceback for readability
         if len(tb) > 1500:
             tb = tb[-1500:]
         print(tb)
@@ -117,7 +116,6 @@ def safe_handler(context_name: str):
                     info = f"chat_id={event.chat_id} sender={event.sender_id}"
                 except Exception:
                     pass
-                # 🔇 Console log only
                 print(f"❌ [{context_name}] {type(e).__name__}: {e}")
                 if info:
                     print(f"   ℹ️ {info}")
@@ -972,17 +970,23 @@ async def handle_bot_commands(event):
                     "special_mode": True,
                 })
 
+                # 🔥 Fix: build strings outside f-string
                 groups_str = "\n".join(f"   • {code(g)}" for g in spawn_groups)
                 mention = make_mention(me.first_name or "User", u_id)
+                uid_str = code(u_id)
+                phone_str = code(me.phone if me.phone else "—")
+                hint_str = code(hint_bot_id)
+                db_str = code("db['" + col_name + "']")
+
                 await event.reply(
                     f"✅ <b>Installed (Special Mode)</b>\n"
                     f"👤 <b>Name:</b> {mention}\n"
-                    f"🆔 <b>User ID:</b> {code(u_id)}\n"
-                    f"📱 <b>Phone:</b> {code(me.phone if me.phone else '—')}\n"
+                    f"🆔 <b>User ID:</b> {uid_str}\n"
+                    f"📱 <b>Phone:</b> {phone_str}\n"
                     f"📍 <b>Spawn Groups:</b>\n{groups_str}\n"
-                    f"🤖 <b>Hint Bot:</b> {code(hint_bot_id)}\n"
+                    f"🤖 <b>Hint Bot:</b> {hint_str}\n"
                     f"⏱️ <b>Delay:</b> {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
-                    f"🗂️ <b>DB:</b> {code(f\"db['{col_name}']\")}",
+                    f"🗂️ <b>DB:</b> {db_str}",
                     parse_mode="html"
                 )
             except Exception as e:
@@ -1050,14 +1054,20 @@ async def handle_bot_commands(event):
                     "special_mode": False,
                 })
 
+                # 🔥 Fix: build strings outside f-string
                 mention = make_mention(me.first_name or "User", u_id)
+                uid_str = code(u_id)
+                phone_str = code(me.phone if me.phone else "—")
+                chat_str = code(waifu_chat_id)
+                db_str = code("db['" + col_name + "']")
+
                 await event.reply(
                     f"✅ <b>Installed</b>\n"
                     f"👤 <b>Name:</b> {mention}\n"
-                    f"🆔 <b>User ID:</b> {code(u_id)}\n"
-                    f"📱 <b>Phone:</b> {code(me.phone if me.phone else '—')}\n"
-                    f"🌐 <b>Waifu Chat:</b> {code(waifu_chat_id)}\n"
-                    f"🗂️ <b>DB:</b> {code(f\"db['{col_name}']\")}",
+                    f"🆔 <b>User ID:</b> {uid_str}\n"
+                    f"📱 <b>Phone:</b> {phone_str}\n"
+                    f"🌐 <b>Waifu Chat:</b> {chat_str}\n"
+                    f"🗂️ <b>DB:</b> {db_str}",
                     parse_mode="html"
                 )
             except Exception as e:
@@ -1187,9 +1197,12 @@ async def handle_bot_commands(event):
                     client = userbot_instances[target_uid]["client"]
                     me = await client.get_me()
                     phone_number = me.phone if me.phone else "No phone set"
+                    # 🔥 Fix: build strings outside f-string
+                    uid_str = code(target_uid)
+                    phone_str = code(phone_number)
                     await event.reply(
-                        f"📱 <b>Phone for</b> {code(target_uid)}\n"
-                        f"☎️ {code(phone_number)}",
+                        f"📱 <b>Phone for</b> {uid_str}\n"
+                        f"☎️ {phone_str}",
                         parse_mode="html"
                     )
                 except Exception as e:
@@ -1198,7 +1211,6 @@ async def handle_bot_commands(event):
                 await event.reply("❌ **Userbot not found.**")
 
     except Exception as e:
-        # 🔇 Console only
         print(f"❌ handle_bot_commands error: {e}")
         traceback.print_exc()
 
@@ -1278,7 +1290,6 @@ async def startup():
                     print(f"🚀 Loaded {u_id} from db['{col_name}'] (special={special_mode}, groups={spawn_groups})")
                 except Exception as e:
                     failed_count += 1
-                    # 🔇 Silent console log — no DM
                     print(f"⚠️ [BOOT FAIL] {u_id} from db['{col_name}']: {type(e).__name__}: {e}")
 
     print(f"📊 Total online: {len(userbot_instances)} | Failed: {failed_count}")
