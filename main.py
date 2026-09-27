@@ -184,6 +184,8 @@ async def start_dummy_web_server():
         pass
 
 async def delete_catch_message_delayed(client, chat_id, msg_id):
+    # ⚠️ Kept for backward compat but NO LONGER USED.
+    # Catch messages are now kept (not deleted).
     try:
         await asyncio.sleep(1)
         await client.delete_messages(chat_id, msg_id)
@@ -443,6 +445,8 @@ async def spawn_detector_handler(event):
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
+    # Normal mode: reply /w in the SAME spawn chat (no forward)
+
     if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
         return
     if any(emoji in text_clean for emoji in config["ignored_emojis"]):
@@ -453,18 +457,12 @@ async def spawn_detector_handler(event):
     latest_spawn_msg[current_user_id] = event.message.id
 
     try:
-        if is_special:
-            w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
-            await asyncio.sleep(w_delay)
-            reply_msg = await event.message.reply("/w")
-            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
-            print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s in {orig_chat_id}")
-        else:
-            target_chat = config["group_id"]
-            fwd_msg = await event.message.forward_to(target_chat)
-            spawn_tracker[(current_user_id, fwd_msg.id)] = orig_chat_id
-            reply_msg = await fwd_msg.reply("/w")
-            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+        # 🥷 Human-like delay before /w (same feel as Special mode)
+        w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
+        await asyncio.sleep(w_delay)
+        reply_msg = await event.message.reply("/w")
+        spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+        print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s in {orig_chat_id}")
 
         if len(spawn_tracker) > 300:
             spawn_tracker.pop(next(iter(spawn_tracker)))
@@ -483,21 +481,27 @@ async def hint_solver_handler(event):
         return
 
     is_special = config.get("special_mode", False)
+
     if is_special:
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
-        if event.sender_id != config["hint_bot_id"]:
-            return
-        if not event.reply_to_msg_id:
-            return
-        if (current_user_id, event.reply_to_msg_id) not in spawn_tracker:
+        if event.sender_id != config.get("hint_bot_id"):
             return
     else:
+        # Normal mode: hint bot replies in the SAME spawn chat
         if event.sender_id not in hint_bot_ids:
             return
-        if event.chat_id != config["group_id"]:
-            return
+
+    if not event.reply_to_msg_id:
+        return
+
+    tracked_orig = spawn_tracker.get((current_user_id, event.reply_to_msg_id))
+    if not tracked_orig:
+        return
+    # Ensure hint reply is in the same chat where our /w was sent
+    if event.chat_id != tracked_orig:
+        return
 
     text_raw = get_message_text(event)
     if not text_raw:
@@ -509,45 +513,40 @@ async def hint_solver_handler(event):
         return
 
     catch_command = match.group(1).strip(" `\n\r")
-    target_orig_group = None
-    if event.reply_to_msg_id and (current_user_id, event.reply_to_msg_id) in spawn_tracker:
-        target_orig_group = spawn_tracker[(current_user_id, event.reply_to_msg_id)]
-    elif current_user_id in latest_spawn:
-        target_orig_group = latest_spawn[current_user_id]
-
+    target_orig_group = tracked_orig or latest_spawn.get(current_user_id)
     if not target_orig_group:
         return
 
     try:
         client_to_use = config["client"]
+
         if is_special:
-            delay_time = random.uniform(
-                config.get("delay_min", SPECIAL_DELAY_MIN),
-                config.get("delay_max", SPECIAL_DELAY_MAX)
-            )
-            read_time = delay_time * random.uniform(0.4, 0.6)
-            typing_time = max(0.3, delay_time - read_time)
-
-            await asyncio.sleep(read_time)
-
-            try:
-                async with client_to_use.action(target_orig_group, 'typing'):
-                    await asyncio.sleep(typing_time)
-            except Exception:
-                await asyncio.sleep(typing_time)
-
-            await client_to_use.send_message(target_orig_group, catch_command)
-            print(
-                f"🥷 [{current_user_id}] /catch sent after "
-                f"read={read_time:.2f}s + typing={typing_time:.2f}s "
-                f"(total={delay_time:.2f}s) → {target_orig_group}"
-            )
+            delay_min = config.get("delay_min", SPECIAL_DELAY_MIN)
+            delay_max = config.get("delay_max", SPECIAL_DELAY_MAX)
         else:
-            await asyncio.sleep(0.1)
+            # Normal mode now uses Special-like human timing
+            delay_min = SPECIAL_DELAY_MIN
+            delay_max = SPECIAL_DELAY_MAX
+
+        delay_time = random.uniform(delay_min, delay_max)
+        read_time = delay_time * random.uniform(0.4, 0.6)
+        typing_time = max(0.3, delay_time - read_time)
+
+        await asyncio.sleep(read_time)
+
+        try:
             async with client_to_use.action(target_orig_group, 'typing'):
-                await asyncio.sleep(0.5)
-            sent_msg = await client_to_use.send_message(target_orig_group, catch_command)
-            asyncio.create_task(delete_catch_message_delayed(client_to_use, target_orig_group, sent_msg.id))
+                await asyncio.sleep(typing_time)
+        except Exception:
+            await asyncio.sleep(typing_time)
+
+        # ✅ No delete — catch message stays
+        await client_to_use.send_message(target_orig_group, catch_command)
+        print(
+            f"🥷 [{current_user_id}] /catch sent after "
+            f"read={read_time:.2f}s + typing={typing_time:.2f}s "
+            f"(total={delay_time:.2f}s) → {target_orig_group}"
+        )
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
 
