@@ -40,7 +40,7 @@ SPECIAL_SPAWN_GROUPS = [
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
-# 🎯 TIMING (Human-like, total 4–6 seconds)
+# 🎯 TIMING (Human-like)
 SPECIAL_W_REPLY_DELAY_MIN = 1
 SPECIAL_W_REPLY_DELAY_MAX = 1
 
@@ -58,7 +58,7 @@ PEEK_FORWARD_BATCH = 50
 # 🎯 STORAGE
 userbot_instances = {}
 hint_bot_ids = {8506436817}
-spawn_tracker = {}
+spawn_tracker = {}       # (user_id, spawn_msg_id) -> chat_id
 latest_spawn = {}
 latest_spawn_msg = {}
 HINT_REGEX = re.compile(r"(/catch(?:@\w+)?\s+[^\n]+)")
@@ -185,7 +185,6 @@ async def start_dummy_web_server():
 
 async def delete_catch_message_delayed(client, chat_id, msg_id):
     # ⚠️ Kept for backward compat but NO LONGER USED.
-    # Catch messages are now kept (not deleted).
     try:
         await asyncio.sleep(1)
         await client.delete_messages(chat_id, msg_id)
@@ -423,6 +422,11 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
 # ==========================================
 @safe_handler("spawn_detector_handler")
 async def spawn_detector_handler(event):
+    """
+    Detect spawn message only.
+    No /w is sent — hint bot auto-replies to spawn bot directly.
+    We only record the spawn message id so we can match hint bot's reply.
+    """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -445,7 +449,7 @@ async def spawn_detector_handler(event):
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
-    # Normal mode: reply /w in the SAME spawn chat (no forward)
+    # Normal mode: same handling, no /w sent
 
     if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
         return
@@ -453,25 +457,25 @@ async def spawn_detector_handler(event):
         return
 
     orig_chat_id = event.chat_id
+    spawn_msg_id = event.message.id
     latest_spawn[current_user_id] = orig_chat_id
-    latest_spawn_msg[current_user_id] = event.message.id
+    latest_spawn_msg[current_user_id] = spawn_msg_id
 
-    try:
-        # 🥷 Human-like delay before /w (same feel as Special mode)
-        w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
-        await asyncio.sleep(w_delay)
-        reply_msg = await event.message.reply("/w")
-        spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
-        print(f"🥷 [{current_user_id}] /w sent after {w_delay:.2f}s in {orig_chat_id}")
+    # 🎯 Track spawn msg so hint bot's reply (replying to spawn) can be matched
+    spawn_tracker[(current_user_id, spawn_msg_id)] = orig_chat_id
+    print(f"🎯 [{current_user_id}] Spawn detected in {orig_chat_id} (msg={spawn_msg_id})")
 
-        if len(spawn_tracker) > 300:
-            spawn_tracker.pop(next(iter(spawn_tracker)))
-    except Exception as e:
-        print(f"❌ spawn handler error {current_user_id}: {e}")
+    if len(spawn_tracker) > 300:
+        spawn_tracker.pop(next(iter(spawn_tracker)))
 
 
 @safe_handler("hint_solver_handler")
 async def hint_solver_handler(event):
+    """
+    Hint bot replies to the spawn message.
+    We match event.reply_to_msg_id against our tracked spawn msg id,
+    then send /catch <name> in the same chat.
+    """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -489,17 +493,16 @@ async def hint_solver_handler(event):
         if event.sender_id != config.get("hint_bot_id"):
             return
     else:
-        # Normal mode: hint bot replies in the SAME spawn chat
         if event.sender_id not in hint_bot_ids:
             return
 
     if not event.reply_to_msg_id:
         return
 
+    # Hint bot replies to the spawn message
     tracked_orig = spawn_tracker.get((current_user_id, event.reply_to_msg_id))
     if not tracked_orig:
         return
-    # Ensure hint reply is in the same chat where our /w was sent
     if event.chat_id != tracked_orig:
         return
 
@@ -524,7 +527,6 @@ async def hint_solver_handler(event):
             delay_min = config.get("delay_min", SPECIAL_DELAY_MIN)
             delay_max = config.get("delay_max", SPECIAL_DELAY_MAX)
         else:
-            # Normal mode now uses Special-like human timing
             delay_min = SPECIAL_DELAY_MIN
             delay_max = SPECIAL_DELAY_MAX
 
@@ -1254,8 +1256,8 @@ async def startup():
             if special_mode and not spawn_groups:
                 spawn_groups = [spawn_group] if spawn_group else list(SPECIAL_SPAWN_GROUPS)
             hint_bot_id = acc_doc.get("hint_bot_id") if special_mode else None
-            delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if special_mode else 0.1
-            delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if special_mode else 0.1
+            delay_min = acc_doc.get("delay_min", SPECIAL_DELAY_MIN) if special_mode else SPECIAL_DELAY_MIN
+            delay_max = acc_doc.get("delay_max", SPECIAL_DELAY_MAX) if special_mode else SPECIAL_DELAY_MAX
 
             if session_str and waifu_chat_id:
                 try:
