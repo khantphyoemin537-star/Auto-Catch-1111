@@ -40,14 +40,14 @@ SPECIAL_SPAWN_GROUPS = [
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
-# 🎯 TIMING (Human-like)
-SPECIAL_W_REPLY_DELAY_MIN = 0.1
-SPECIAL_W_REPLY_DELAY_MAX = 0.1
+# 🎯 TIMING (very small — hint bot already gives us time)
+SPECIAL_W_REPLY_DELAY_MIN = 0.05
+SPECIAL_W_REPLY_DELAY_MAX = 0.05
 
-SPECIAL_DELAY_MIN = 0.1
-SPECIAL_DELAY_MAX = 0.1
+SPECIAL_DELAY_MIN = 0.05
+SPECIAL_DELAY_MAX = 0.05
 
-SPECIAL_W_REPLY_DELAY = 0.1
+SPECIAL_W_REPLY_DELAY = 0.05
 
 CGIFT_CHAT_ID = -1003967256441
 CGIFT_WAIT_SEC = 6
@@ -449,7 +449,6 @@ async def spawn_detector_handler(event):
         allowed = config.get("spawn_groups") or SPECIAL_SPAWN_GROUPS
         if event.chat_id not in allowed:
             return
-    # Normal mode: same handling, no /w sent
 
     if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
         return
@@ -475,6 +474,8 @@ async def hint_solver_handler(event):
     Hint bot replies to the spawn message.
     We match event.reply_to_msg_id against our tracked spawn msg id,
     then send /catch <name> in the same chat.
+    
+    ⚡ FAST PATH: no typing action, no 0.3s floor.
     """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
@@ -521,34 +522,16 @@ async def hint_solver_handler(event):
         return
 
     try:
-        client_to_use = config["client"]
+        # ⚡ No typing action, no 0.3s floor, no random delay.
+        # Tiny micro-sleep so consecutive catches don't fire in the same ms.
+        await asyncio.sleep(0.05)
 
-        if is_special:
-            delay_min = config.get("delay_min", SPECIAL_DELAY_MIN)
-            delay_max = config.get("delay_max", SPECIAL_DELAY_MAX)
-        else:
-            delay_min = SPECIAL_DELAY_MIN
-            delay_max = SPECIAL_DELAY_MAX
+        await config["client"].send_message(target_orig_group, catch_command)
 
-        delay_time = random.uniform(delay_min, delay_max)
-        read_time = delay_time * random.uniform(0.4, 0.6)
-        typing_time = max(0.3, delay_time - read_time)
+        # 🧹 Clean up tracker entry — no longer needed
+        spawn_tracker.pop((current_user_id, event.reply_to_msg_id), None)
 
-        await asyncio.sleep(read_time)
-
-        try:
-            async with client_to_use.action(target_orig_group, 'typing'):
-                await asyncio.sleep(typing_time)
-        except Exception:
-            await asyncio.sleep(typing_time)
-
-        # ✅ No delete — catch message stays
-        await client_to_use.send_message(target_orig_group, catch_command)
-        print(
-            f"🥷 [{current_user_id}] /catch sent after "
-            f"read={read_time:.2f}s + typing={typing_time:.2f}s "
-            f"(total={delay_time:.2f}s) → {target_orig_group}"
-        )
+        print(f"⚡ [{current_user_id}] /catch sent → {target_orig_group}")
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
 
@@ -985,7 +968,7 @@ async def handle_bot_commands(event):
                     f"📱 <b>Phone:</b> {phone_str}\n"
                     f"📍 <b>Spawn Groups:</b>\n{groups_str}\n"
                     f"🤖 <b>Hint Bot:</b> {hint_str}\n"
-                    f"⏱️ <b>Delay:</b> {SPECIAL_DELAY_MIN} ~ {SPECIAL_DELAY_MAX} sec\n"
+                    f"⏱️ <b>Delay:</b> {SPECIAL_DELAY_MIN} sec\n"
                     f"🗂️ <b>DB:</b> {db_str}",
                     parse_mode="html"
                 )
