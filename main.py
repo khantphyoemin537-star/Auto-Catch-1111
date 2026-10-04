@@ -49,7 +49,7 @@ SPECIAL_DELAY_MAX = 0.05
 
 SPECIAL_W_REPLY_DELAY = 0.05
 
-CGIFT_CHAT_ID = -1003618231875
+CGIFT_CHAT_ID = -1004423642531
 CGIFT_WAIT_SEC = 3
 
 PEEK_LIMIT = 1000
@@ -298,9 +298,9 @@ async def run_cgift_loop(client, user_id):
             try:
                 reply_target = state.get("reply_to_msg_id")
                 if reply_target:
-                    await client.send_message(state["chat_id"], f"/cgift {gift_id}", reply_to=reply_target)
+                    await client.send_message(state["chat_id"], f"/checksync {gift_id}", reply_to=reply_target)
                 else:
-                    await client.send_message(state["chat_id"], f"/cgift {gift_id}")
+                    await client.send_message(state["chat_id"], f"/checksync {gift_id}")
             except Exception as e:
                 print(f"❌ [{user_id}] send error for {gift_id}: {e}")
 
