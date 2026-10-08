@@ -40,7 +40,7 @@ SPECIAL_SPAWN_GROUPS = [
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
-# 🎯 TIMING — SPECIAL (very small)
+# 🎯 TIMING (fast)
 SPECIAL_W_REPLY_DELAY_MIN = 0.05
 SPECIAL_W_REPLY_DELAY_MAX = 0.05
 
@@ -49,14 +49,8 @@ SPECIAL_DELAY_MAX = 0.05
 
 SPECIAL_W_REPLY_DELAY = 0.05
 
-# 🎯 TIMING — NORMAL (not too slow, not too fast)
-NORMAL_W_DELAY_MIN = 0.3
-NORMAL_W_DELAY_MAX = 0.7
-NORMAL_CATCH_DELAY_MIN = 0.2
-NORMAL_CATCH_DELAY_MAX = 0.5
-
-CGIFT_CHAT_ID = -1004423642531
-CGIFT_WAIT_SEC = 3
+CGIFT_CHAT_ID = -1003967256441
+CGIFT_WAIT_SEC = 6
 
 PEEK_LIMIT = 1000
 PEEK_FORWARD_BATCH = 50
@@ -64,7 +58,7 @@ PEEK_FORWARD_BATCH = 50
 # 🎯 STORAGE
 userbot_instances = {}
 hint_bot_ids = {8506436817}
-spawn_tracker = {}       # (user_id, chat_id, msg_id) -> original_chat_id
+spawn_tracker = {}       # (user_id, w_reply_msg_id) -> orig_chat_id
 latest_spawn = {}
 latest_spawn_msg = {}
 HINT_REGEX = re.compile(r"(/catch(?:@\w+)?\s+[^\n]+)")
@@ -98,7 +92,6 @@ bot = TelegramClient('official_bot_session', APP_ID, APP_HASH)
 # 🛡️ ERROR LOGGING (CONSOLE ONLY — no DM)
 # ==========================================
 async def report_error(context: str, exc: Exception, extra: str = ""):
-    """Log error to console only. No DM to owner."""
     try:
         tb = ''.join(traceback.format_exception(type(exc), exc, exc.__traceback__))
         print(f"❌ [{context}] {type(exc).__name__}: {exc}")
@@ -273,7 +266,6 @@ def make_mention(name: str, user_id: int) -> str:
 
 
 def code(text) -> str:
-    """HTML code block - tap to copy in Telegram."""
     s = str(text)
     s = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return f"<code>{s}</code>"
@@ -304,9 +296,9 @@ async def run_cgift_loop(client, user_id):
             try:
                 reply_target = state.get("reply_to_msg_id")
                 if reply_target:
-                    await client.send_message(state["chat_id"], f"/checksync {gift_id}", reply_to=reply_target)
+                    await client.send_message(state["chat_id"], f"/cgift {gift_id}", reply_to=reply_target)
                 else:
-                    await client.send_message(state["chat_id"], f"/checksync {gift_id}")
+                    await client.send_message(state["chat_id"], f"/cgift {gift_id}")
             except Exception as e:
                 print(f"❌ [{user_id}] send error for {gift_id}: {e}")
 
@@ -429,14 +421,10 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
 @safe_handler("spawn_detector_handler")
 async def spawn_detector_handler(event):
     """
-    Detect spawn message.
-
-    SPECIAL MODE:
-      - Hint bot auto-replies in same chat → we only track spawn msg id.
-    NORMAL MODE:
-      - Forward spawn → relay group (`config["group_id"]`)
-      - Reply `/w` to the forwarded msg in relay group
-      - Track (user, relay_chat, fwd_msg_id) → original_chat_id
+    OLD VERSION:
+      - Normal mode: forward spawn → userbot's group_id → reply /w on forwarded msg
+      - Special mode: reply /w directly in the spawn chat
+    Track (user_id, /w_reply_msg_id) -> orig_chat_id for hint matching.
     """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
@@ -467,52 +455,42 @@ async def spawn_detector_handler(event):
         return
 
     orig_chat_id = event.chat_id
-    spawn_msg_id = event.message.id
     latest_spawn[current_user_id] = orig_chat_id
-    latest_spawn_msg[current_user_id] = spawn_msg_id
+    latest_spawn_msg[current_user_id] = event.message.id
 
-    if is_special:
-        # 🥷 Special: hint bot auto-replies in same chat (no /w needed)
-        spawn_tracker[(current_user_id, orig_chat_id, spawn_msg_id)] = orig_chat_id
-        print(f"🎯 [{current_user_id}] [SPECIAL] Spawn detected in {orig_chat_id} (msg={spawn_msg_id})")
-    else:
-        # 🌐 Normal: forward spawn → relay group, reply /w there
-        relay_chat_id = config["group_id"]
-        client = config["client"]
-        try:
-            if orig_chat_id == relay_chat_id:
-                # Spawn already in relay — reply /w directly (can't forward to same chat)
-                await asyncio.sleep(random.uniform(NORMAL_W_DELAY_MIN, NORMAL_W_DELAY_MAX))
-                await client.send_message(relay_chat_id, "/w", reply_to=spawn_msg_id)
-                spawn_tracker[(current_user_id, relay_chat_id, spawn_msg_id)] = relay_chat_id
-                print(f"🎯 [{current_user_id}] [NORMAL] Spawn in relay {relay_chat_id} → /w sent")
-            else:
-                # Forward spawn → relay group
-                fwd = await client.forward_messages(relay_chat_id, event.message)
-                fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
-                await asyncio.sleep(random.uniform(NORMAL_W_DELAY_MIN, NORMAL_W_DELAY_MAX))
-                await client.send_message(relay_chat_id, "/w", reply_to=fwd_msg.id)
-                spawn_tracker[(current_user_id, relay_chat_id, fwd_msg.id)] = orig_chat_id
-                print(
-                    f"🎯 [{current_user_id}] [NORMAL] {orig_chat_id} → fwd to {relay_chat_id} "
-                    f"(fwd={fwd_msg.id}) → /w sent"
-                )
-        except Exception as e:
-            print(f"❌ [{current_user_id}] forward/w error: {e}")
+    try:
+        if is_special:
+            # 🥷 Special: reply /w directly in spawn chat
+            w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
+            await asyncio.sleep(w_delay)
+            reply_msg = await event.message.reply("/w")
+            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+            print(f"🥷 [{current_user_id}] /w sent (special) after {w_delay:.2f}s in {orig_chat_id}")
+        else:
+            # 🌐 Normal (OLD): forward to group_id then reply /w on forwarded msg
+            target_chat = config["group_id"]
+            fwd_msg = await event.message.forward_to(target_chat)
+            w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
+            await asyncio.sleep(w_delay)
+            reply_msg = await fwd_msg.reply("/w")
+            spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
+            print(f"🌐 [{current_user_id}] forwarded & /w sent in {target_chat} (orig={orig_chat_id})")
 
-    if len(spawn_tracker) > 300:
-        spawn_tracker.pop(next(iter(spawn_tracker)))
+        if len(spawn_tracker) > 300:
+            spawn_tracker.pop(next(iter(spawn_tracker)))
+    except Exception as e:
+        print(f"❌ spawn handler error {current_user_id}: {e}")
 
 
 @safe_handler("hint_solver_handler")
 async def hint_solver_handler(event):
     """
-    Hint bot replies to a spawn message.
-
-    SPECIAL: hint bot replies to spawn in SAME chat → send /catch to that chat.
-    NORMAL:  hint bot replies to forwarded msg in RELAY chat → send /catch back to ORIGINAL spawn chat.
+    OLD VERSION:
+      - Normal mode: hint bot replies in config["group_id"] to /w msg
+      - Special mode: hint bot replies in spawn chat to /w msg
+    Match reply_to_msg_id → find orig spawn chat → send /catch back there.
     """
-    global spawn_tracker
+    global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
         return
@@ -529,16 +507,16 @@ async def hint_solver_handler(event):
         if event.sender_id != config.get("hint_bot_id"):
             return
     else:
+        # Normal: hint bot must reply in config["group_id"]
         if event.sender_id not in hint_bot_ids:
+            return
+        if event.chat_id != config["group_id"]:
             return
 
     if not event.reply_to_msg_id:
         return
 
-    # 🔑 3-tuple key: (user_id, hint_reply_chat_id, replied_msg_id)
-    tracked_orig = spawn_tracker.get(
-        (current_user_id, event.chat_id, event.reply_to_msg_id)
-    )
+    tracked_orig = spawn_tracker.get((current_user_id, event.reply_to_msg_id))
     if not tracked_orig:
         return
 
@@ -552,23 +530,17 @@ async def hint_solver_handler(event):
         return
 
     catch_command = match.group(1).strip(" `\n\r")
+    target_orig_group = tracked_orig or latest_spawn.get(current_user_id)
+    if not target_orig_group:
+        return
 
     try:
-        if is_special:
-            # ⚡ Tiny micro-sleep only
-            await asyncio.sleep(0.05)
-        else:
-            # 🌐 Normal: moderate delay (not too slow, not too fast)
-            await asyncio.sleep(random.uniform(NORMAL_CATCH_DELAY_MIN, NORMAL_CATCH_DELAY_MAX))
+        # ⚡ Fast: no typing action, no floor
+        await asyncio.sleep(0.05)
+        await config["client"].send_message(target_orig_group, catch_command)
 
-        # ✅ Send /catch to ORIGINAL spawn group (not relay)
-        await config["client"].send_message(tracked_orig, catch_command)
-
-        spawn_tracker.pop(
-            (current_user_id, event.chat_id, event.reply_to_msg_id), None
-        )
-        mode_tag = "SPECIAL" if is_special else "NORMAL"
-        print(f"⚡ [{current_user_id}] [{mode_tag}] /catch → {tracked_orig}")
+        spawn_tracker.pop((current_user_id, event.reply_to_msg_id), None)
+        print(f"⚡ [{current_user_id}] /catch sent → {target_orig_group}")
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
 
@@ -629,7 +601,6 @@ def register_userbot_handlers(client, waifu_chat_id):
 # 🆕 LIST BUILDER
 # ==========================================
 async def build_loaded_list() -> str:
-    """Return formatted list of all loaded userbots (HTML, tap-to-copy code)."""
     if not loaded_userbots:
         return "📭 <b>No userbots loaded.</b>"
 
@@ -1312,7 +1283,6 @@ async def startup():
 
     print(f"📊 Total online: {len(userbot_instances)} | Failed: {failed_count}")
 
-    # Startup summary (HTML, copy-able IDs)
     try:
         summary = (
             f"🟢 <b>Startup complete</b>\n"
@@ -1326,7 +1296,6 @@ async def startup():
     except Exception:
         pass
 
-    # Auto-send full list (chunked if needed)
     try:
         if loaded_userbots:
             list_msg = await build_loaded_list()
