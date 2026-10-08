@@ -40,7 +40,7 @@ SPECIAL_SPAWN_GROUPS = [
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
-# 🎯 TIMING (very small — hint bot already gives us time)
+# 🎯 TIMING — SPECIAL (very small)
 SPECIAL_W_REPLY_DELAY_MIN = 0.05
 SPECIAL_W_REPLY_DELAY_MAX = 0.05
 
@@ -48,6 +48,12 @@ SPECIAL_DELAY_MIN = 0.05
 SPECIAL_DELAY_MAX = 0.05
 
 SPECIAL_W_REPLY_DELAY = 0.05
+
+# 🎯 TIMING — NORMAL (not too slow, not too fast)
+NORMAL_W_DELAY_MIN = 0.3
+NORMAL_W_DELAY_MAX = 0.7
+NORMAL_CATCH_DELAY_MIN = 0.2
+NORMAL_CATCH_DELAY_MAX = 0.5
 
 CGIFT_CHAT_ID = -1004423642531
 CGIFT_WAIT_SEC = 3
@@ -58,7 +64,7 @@ PEEK_FORWARD_BATCH = 50
 # 🎯 STORAGE
 userbot_instances = {}
 hint_bot_ids = {8506436817}
-spawn_tracker = {}       # (user_id, spawn_msg_id) -> chat_id
+spawn_tracker = {}       # (user_id, chat_id, msg_id) -> original_chat_id
 latest_spawn = {}
 latest_spawn_msg = {}
 HINT_REGEX = re.compile(r"(/catch(?:@\w+)?\s+[^\n]+)")
@@ -423,9 +429,14 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
 @safe_handler("spawn_detector_handler")
 async def spawn_detector_handler(event):
     """
-    Detect spawn message only.
-    No /w is sent — hint bot auto-replies to spawn bot directly.
-    We only record the spawn message id so we can match hint bot's reply.
+    Detect spawn message.
+
+    SPECIAL MODE:
+      - Hint bot auto-replies in same chat → we only track spawn msg id.
+    NORMAL MODE:
+      - Forward spawn → relay group (`config["group_id"]`)
+      - Reply `/w` to the forwarded msg in relay group
+      - Track (user, relay_chat, fwd_msg_id) → original_chat_id
     """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
@@ -460,9 +471,34 @@ async def spawn_detector_handler(event):
     latest_spawn[current_user_id] = orig_chat_id
     latest_spawn_msg[current_user_id] = spawn_msg_id
 
-    # 🎯 Track spawn msg so hint bot's reply (replying to spawn) can be matched
-    spawn_tracker[(current_user_id, spawn_msg_id)] = orig_chat_id
-    print(f"🎯 [{current_user_id}] Spawn detected in {orig_chat_id} (msg={spawn_msg_id})")
+    if is_special:
+        # 🥷 Special: hint bot auto-replies in same chat (no /w needed)
+        spawn_tracker[(current_user_id, orig_chat_id, spawn_msg_id)] = orig_chat_id
+        print(f"🎯 [{current_user_id}] [SPECIAL] Spawn detected in {orig_chat_id} (msg={spawn_msg_id})")
+    else:
+        # 🌐 Normal: forward spawn → relay group, reply /w there
+        relay_chat_id = config["group_id"]
+        client = config["client"]
+        try:
+            if orig_chat_id == relay_chat_id:
+                # Spawn already in relay — reply /w directly (can't forward to same chat)
+                await asyncio.sleep(random.uniform(NORMAL_W_DELAY_MIN, NORMAL_W_DELAY_MAX))
+                await client.send_message(relay_chat_id, "/w", reply_to=spawn_msg_id)
+                spawn_tracker[(current_user_id, relay_chat_id, spawn_msg_id)] = relay_chat_id
+                print(f"🎯 [{current_user_id}] [NORMAL] Spawn in relay {relay_chat_id} → /w sent")
+            else:
+                # Forward spawn → relay group
+                fwd = await client.forward_messages(relay_chat_id, event.message)
+                fwd_msg = fwd[0] if isinstance(fwd, list) else fwd
+                await asyncio.sleep(random.uniform(NORMAL_W_DELAY_MIN, NORMAL_W_DELAY_MAX))
+                await client.send_message(relay_chat_id, "/w", reply_to=fwd_msg.id)
+                spawn_tracker[(current_user_id, relay_chat_id, fwd_msg.id)] = orig_chat_id
+                print(
+                    f"🎯 [{current_user_id}] [NORMAL] {orig_chat_id} → fwd to {relay_chat_id} "
+                    f"(fwd={fwd_msg.id}) → /w sent"
+                )
+        except Exception as e:
+            print(f"❌ [{current_user_id}] forward/w error: {e}")
 
     if len(spawn_tracker) > 300:
         spawn_tracker.pop(next(iter(spawn_tracker)))
@@ -471,13 +507,12 @@ async def spawn_detector_handler(event):
 @safe_handler("hint_solver_handler")
 async def hint_solver_handler(event):
     """
-    Hint bot replies to the spawn message.
-    We match event.reply_to_msg_id against our tracked spawn msg id,
-    then send /catch <name> in the same chat.
-    
-    ⚡ FAST PATH: no typing action, no 0.3s floor.
+    Hint bot replies to a spawn message.
+
+    SPECIAL: hint bot replies to spawn in SAME chat → send /catch to that chat.
+    NORMAL:  hint bot replies to forwarded msg in RELAY chat → send /catch back to ORIGINAL spawn chat.
     """
-    global spawn_tracker, latest_spawn, latest_spawn_msg
+    global spawn_tracker
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
         return
@@ -500,11 +535,11 @@ async def hint_solver_handler(event):
     if not event.reply_to_msg_id:
         return
 
-    # Hint bot replies to the spawn message
-    tracked_orig = spawn_tracker.get((current_user_id, event.reply_to_msg_id))
+    # 🔑 3-tuple key: (user_id, hint_reply_chat_id, replied_msg_id)
+    tracked_orig = spawn_tracker.get(
+        (current_user_id, event.chat_id, event.reply_to_msg_id)
+    )
     if not tracked_orig:
-        return
-    if event.chat_id != tracked_orig:
         return
 
     text_raw = get_message_text(event)
@@ -517,21 +552,23 @@ async def hint_solver_handler(event):
         return
 
     catch_command = match.group(1).strip(" `\n\r")
-    target_orig_group = tracked_orig or latest_spawn.get(current_user_id)
-    if not target_orig_group:
-        return
 
     try:
-        # ⚡ No typing action, no 0.3s floor, no random delay.
-        # Tiny micro-sleep so consecutive catches don't fire in the same ms.
-        await asyncio.sleep(0.05)
+        if is_special:
+            # ⚡ Tiny micro-sleep only
+            await asyncio.sleep(0.05)
+        else:
+            # 🌐 Normal: moderate delay (not too slow, not too fast)
+            await asyncio.sleep(random.uniform(NORMAL_CATCH_DELAY_MIN, NORMAL_CATCH_DELAY_MAX))
 
-        await config["client"].send_message(target_orig_group, catch_command)
+        # ✅ Send /catch to ORIGINAL spawn group (not relay)
+        await config["client"].send_message(tracked_orig, catch_command)
 
-        # 🧹 Clean up tracker entry — no longer needed
-        spawn_tracker.pop((current_user_id, event.reply_to_msg_id), None)
-
-        print(f"⚡ [{current_user_id}] /catch sent → {target_orig_group}")
+        spawn_tracker.pop(
+            (current_user_id, event.chat_id, event.reply_to_msg_id), None
+        )
+        mode_tag = "SPECIAL" if is_special else "NORMAL"
+        print(f"⚡ [{current_user_id}] [{mode_tag}] /catch → {tracked_orig}")
     except Exception as e:
         print(f"❌ Catch error {current_user_id}: {e}")
 
