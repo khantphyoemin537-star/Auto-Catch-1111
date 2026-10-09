@@ -44,9 +44,8 @@ SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 SPECIAL_W_REPLY_DELAY_MIN = 0.05
 SPECIAL_W_REPLY_DELAY_MAX = 0.05
 
-SPECIAL_DELAY_MIN = 0.05
-SPECIAL_DELAY_MAX = 0.05
-
+SPECIAL_DELAY_MIN = 0.5
+SPECIAL_DELAY_MAX = 1
 SPECIAL_W_REPLY_DELAY = 0.05
 
 CGIFT_CHAT_ID = -1004423642531
@@ -449,7 +448,7 @@ async def spawn_detector_handler(event):
         if event.chat_id not in allowed:
             return
 
-    if event.chat_id in [-1001947407820, -1003067509608, -1003760110058]:
+    if event.chat_id in [-1001947407820, -1003067509608, -1003760110058, -1003555031860]:
         return
     if any(emoji in text_clean for emoji in config["ignored_emojis"]):
         return
