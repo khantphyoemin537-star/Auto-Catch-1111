@@ -40,16 +40,25 @@ SPECIAL_SPAWN_GROUPS = [
 ]
 SPECIAL_SPAWN_GROUP = -1003580630981  # backward compat
 
+# 🚫 Spawns in these chats will be completely ignored (no /w, no catch)
+IGNORED_SPAWN_CHATS = {
+    -1001947407820,
+    -1003067509608,
+    -1003760110058,
+    -1003555031860,   # 👈 user requested
+}
+
 # 🎯 TIMING (fast)
 SPECIAL_W_REPLY_DELAY_MIN = 0.05
 SPECIAL_W_REPLY_DELAY_MAX = 0.05
 
-SPECIAL_DELAY_MIN = 0.5
-SPECIAL_DELAY_MAX = 1
+SPECIAL_DELAY_MIN = 0.05
+SPECIAL_DELAY_MAX = 0.05
+
 SPECIAL_W_REPLY_DELAY = 0.05
 
 CGIFT_CHAT_ID = -1004423642531
-CGIFT_WAIT_SEC = 4
+CGIFT_WAIT_SEC = 6
 
 PEEK_LIMIT = 1000
 PEEK_FORWARD_BATCH = 50
@@ -415,6 +424,145 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
 
 
 # ==========================================
+# 📥 GRAB MEDIA (works even with noforwards)
+# ==========================================
+async def perform_grab(userbot_id, group_id, msg_ids, owner_chat_id):
+    """
+    Download media by message IDs using a userbot and re-upload to owner.
+    Works even if group has 'Restrict Saving Content' (noforwards).
+    """
+    config = userbot_instances.get(userbot_id)
+    if not config:
+        return False, "Userbot not found"
+
+    client = config["client"]
+
+    # 1. Resolve entity
+    try:
+        entity = await client.get_entity(group_id)
+    except Exception as e:
+        return False, f"Cannot resolve group {group_id}: {e}"
+
+    # 2. Fetch messages
+    try:
+        messages = await client.get_messages(entity, ids=msg_ids)
+    except Exception as e:
+        return False, f"Fetch failed: {e}"
+
+    if not messages:
+        return False, "No messages found"
+
+    if not isinstance(messages, list):
+        messages = [messages]
+
+    total = len(messages)
+    ok = 0
+    failed = 0
+    no_media = 0
+
+    try:
+        await client.send_message(
+            owner_chat_id,
+            f"📥 **GRAB STARTED**\n"
+            f"🆔 Selfbot: `{userbot_id}`\n"
+            f"🎯 Group: `{group_id}`\n"
+            f"📊 Messages: `{total}`"
+        )
+    except Exception as e:
+        return False, f"Cannot notify owner: {e}"
+
+    tmp_dir = f"./grab_tmp_{userbot_id}"
+    os.makedirs(tmp_dir, exist_ok=True)
+
+    for msg in messages:
+        if not msg:
+            failed += 1
+            continue
+        if not msg.media:
+            no_media += 1
+            continue
+
+        file_path = None
+        try:
+            # ✅ download_media bypasses noforwards restriction
+            file_path = await msg.download_media(file=tmp_dir)
+            if not file_path:
+                failed += 1
+                continue
+
+            # Re-upload to owner
+            caption = msg.text or msg.message or ""
+            if len(caption) > 900:
+                caption = caption[:900] + "…"
+
+            # Try as document first (best quality)
+            sent = False
+            try:
+                await client.send_file(
+                    owner_chat_id,
+                    file_path,
+                    caption=caption,
+                    force_document=True,
+                )
+                sent = True
+            except Exception as e:
+                print(f"⚠️ send_file (doc) failed: {e}")
+
+            # Fallback: as media (photo/video)
+            if not sent:
+                try:
+                    await client.send_file(
+                        owner_chat_id,
+                        file_path,
+                        caption=caption,
+                        force_document=False,
+                    )
+                    sent = True
+                except Exception as e:
+                    print(f"⚠️ send_file (media) failed: {e}")
+
+            if sent:
+                ok += 1
+            else:
+                failed += 1
+
+        except Exception as e:
+            print(f"❌ grab msg {getattr(msg, 'id', '?')}: {e}")
+            failed += 1
+        finally:
+            # Cleanup temp file
+            try:
+                if file_path and os.path.exists(file_path):
+                    os.remove(file_path)
+            except Exception:
+                pass
+
+            # Small delay to avoid flood
+            await asyncio.sleep(0.5)
+
+    # Cleanup temp dir
+    try:
+        if os.path.isdir(tmp_dir) and not os.listdir(tmp_dir):
+            os.rmdir(tmp_dir)
+    except Exception:
+        pass
+
+    try:
+        await client.send_message(
+            owner_chat_id,
+            f"✅ **GRAB COMPLETE**\n"
+            f"📤 Sent: `{ok}`\n"
+            f"🚫 Failed: `{failed}`\n"
+            f"📭 No media: `{no_media}`\n"
+            f"📊 Total: `{total}`"
+        )
+    except Exception:
+        pass
+
+    return True, f"Grab done: {ok}/{total}"
+
+
+# ==========================================
 # ⚔️ SPAWN HANDLERS
 # ==========================================
 @safe_handler("spawn_detector_handler")
@@ -448,8 +596,10 @@ async def spawn_detector_handler(event):
         if event.chat_id not in allowed:
             return
 
-    if event.chat_id in [-1001947407820, -1003067509608, -1003760110058, -1003555031860]:
+    # 🚫 Ignored spawn chats (no /w, no catch)
+    if event.chat_id in IGNORED_SPAWN_CHATS:
         return
+
     if any(emoji in text_clean for emoji in config["ignored_emojis"]):
         return
 
@@ -717,6 +867,71 @@ async def handle_bot_commands(event):
 
             await event.reply(f"👀 **Peeking @{target_username.lstrip('@')} via selfbot `{target_uid}`...**\nThis may take a while (up to {PEEK_LIMIT} msgs).")
             asyncio.create_task(perform_peek(target_uid, target_username, event.chat_id))
+
+        # ---------- 📥 /grab ----------
+        elif cmd == "/grab":
+            if not args:
+                await event.reply(
+                    "⚠️ **Usage:**\n"
+                    "`/grab {userbot_id} {group_id} {msg_id1,msg_id2,...}`\n"
+                    "**or** reply to a message containing IDs with `/grab {userbot_id} {group_id}`\n\n"
+                    "💡 Works even if the group has 'Restrict Saving Content' (noforwards)."
+                )
+                return
+
+            parts = args.split(maxsplit=2)
+            if len(parts) < 2:
+                await event.reply("⚠️ **Usage:** `/grab {userbot_id} {group_id} {msg_ids}`")
+                return
+
+            try:
+                target_uid = int(parts[0])
+            except ValueError:
+                await event.reply("❌ **Invalid Userbot ID.**")
+                return
+
+            if target_uid not in userbot_instances:
+                await event.reply(f"❌ **Selfbot `{target_uid}` is not online.**")
+                return
+
+            try:
+                group_id = int(parts[1])
+            except ValueError:
+                await event.reply("❌ **Invalid Group ID.**")
+                return
+
+            # Parse msg IDs — from args or from replied message
+            msg_ids_raw = parts[2].strip() if len(parts) > 2 else ""
+            if not msg_ids_raw and event.is_reply:
+                r = await event.get_reply_message()
+                if r and r.text:
+                    msg_ids_raw = r.text.strip()
+
+            if not msg_ids_raw:
+                await event.reply("⚠️ **No message IDs provided.**")
+                return
+
+            # Support both comma and newline separation
+            msg_ids_raw = msg_ids_raw.replace("\n", ",")
+            msg_ids = []
+            for chunk in msg_ids_raw.split(","):
+                chunk = chunk.strip()
+                if not chunk:
+                    continue
+                if chunk.isdigit():
+                    msg_ids.append(int(chunk))
+
+            if not msg_ids:
+                await event.reply("❌ **No valid message IDs found.**")
+                return
+
+            await event.reply(
+                f"📥 **Grab started**\n"
+                f"🆔 Selfbot: `{target_uid}`\n"
+                f"🎯 Group: `{group_id}`\n"
+                f"📊 Count: `{len(msg_ids)}`"
+            )
+            asyncio.create_task(perform_grab(target_uid, group_id, msg_ids, event.chat_id))
 
         # ---------- /idsave ----------
         elif cmd == "/idsave":
