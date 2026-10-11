@@ -191,7 +191,6 @@ async def start_dummy_web_server():
         pass
 
 async def delete_catch_message_delayed(client, chat_id, msg_id):
-    # ⚠️ Kept for backward compat but NO LONGER USED.
     try:
         await asyncio.sleep(1)
         await client.delete_messages(chat_id, msg_id)
@@ -428,7 +427,8 @@ async def perform_peek(userbot_id, target_username, owner_chat_id):
 # ==========================================
 async def perform_grab(userbot_id, group_id, msg_ids, owner_chat_id):
     """
-    Download media by message IDs using a userbot and re-upload to owner.
+    Download media by message IDs using a userbot and re-upload to owner DM
+    as **normal media** (photo/video/gif/sticker) — NOT as document.
     Works even if group has 'Restrict Saving Content' (noforwards).
     """
     config = userbot_instances.get(userbot_id)
@@ -490,36 +490,36 @@ async def perform_grab(userbot_id, group_id, msg_ids, owner_chat_id):
                 failed += 1
                 continue
 
-            # Re-upload to owner
+            # Caption from original message
             caption = msg.text or msg.message or ""
             if len(caption) > 900:
                 caption = caption[:900] + "…"
 
-            # Try as document first (best quality)
+            # ✅ Send as NORMAL media (photo/video/etc), not document
             sent = False
             try:
                 await client.send_file(
                     owner_chat_id,
                     file_path,
                     caption=caption,
-                    force_document=True,
+                    force_document=False,   # 👈 send as photo/video
                 )
                 sent = True
             except Exception as e:
-                print(f"⚠️ send_file (doc) failed: {e}")
+                print(f"⚠️ send_file (media) failed: {e}")
 
-            # Fallback: as media (photo/video)
+            # Fallback: send as document if media send fails
             if not sent:
                 try:
                     await client.send_file(
                         owner_chat_id,
                         file_path,
                         caption=caption,
-                        force_document=False,
+                        force_document=True,
                     )
                     sent = True
                 except Exception as e:
-                    print(f"⚠️ send_file (media) failed: {e}")
+                    print(f"⚠️ send_file (doc) fallback failed: {e}")
 
             if sent:
                 ok += 1
@@ -567,12 +567,6 @@ async def perform_grab(userbot_id, group_id, msg_ids, owner_chat_id):
 # ==========================================
 @safe_handler("spawn_detector_handler")
 async def spawn_detector_handler(event):
-    """
-    OLD VERSION:
-      - Normal mode: forward spawn → userbot's group_id → reply /w on forwarded msg
-      - Special mode: reply /w directly in the spawn chat
-    Track (user_id, /w_reply_msg_id) -> orig_chat_id for hint matching.
-    """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -609,14 +603,12 @@ async def spawn_detector_handler(event):
 
     try:
         if is_special:
-            # 🥷 Special: reply /w directly in spawn chat
             w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
             await asyncio.sleep(w_delay)
             reply_msg = await event.message.reply("/w")
             spawn_tracker[(current_user_id, reply_msg.id)] = orig_chat_id
             print(f"🥷 [{current_user_id}] /w sent (special) after {w_delay:.2f}s in {orig_chat_id}")
         else:
-            # 🌐 Normal (OLD): forward to group_id then reply /w on forwarded msg
             target_chat = config["group_id"]
             fwd_msg = await event.message.forward_to(target_chat)
             w_delay = random.uniform(SPECIAL_W_REPLY_DELAY_MIN, SPECIAL_W_REPLY_DELAY_MAX)
@@ -633,12 +625,6 @@ async def spawn_detector_handler(event):
 
 @safe_handler("hint_solver_handler")
 async def hint_solver_handler(event):
-    """
-    OLD VERSION:
-      - Normal mode: hint bot replies in config["group_id"] to /w msg
-      - Special mode: hint bot replies in spawn chat to /w msg
-    Match reply_to_msg_id → find orig spawn chat → send /catch back there.
-    """
     global spawn_tracker, latest_spawn, latest_spawn_msg
     current_user_id = getattr(event.client, 'tg_user_id', None)
     if not current_user_id or current_user_id not in userbot_instances:
@@ -656,7 +642,6 @@ async def hint_solver_handler(event):
         if event.sender_id != config.get("hint_bot_id"):
             return
     else:
-        # Normal: hint bot must reply in config["group_id"]
         if event.sender_id not in hint_bot_ids:
             return
         if event.chat_id != config["group_id"]:
@@ -684,7 +669,6 @@ async def hint_solver_handler(event):
         return
 
     try:
-        # ⚡ Fast: no typing action, no floor
         await asyncio.sleep(0.05)
         await config["client"].send_message(target_orig_group, catch_command)
 
@@ -874,8 +858,10 @@ async def handle_bot_commands(event):
                 await event.reply(
                     "⚠️ **Usage:**\n"
                     "`/grab {userbot_id} {group_id} {msg_id1,msg_id2,...}`\n"
+                    "`/grab {userbot_id} {group_id} {start-end}`  ← range\n"
                     "**or** reply to a message containing IDs with `/grab {userbot_id} {group_id}`\n\n"
-                    "💡 Works even if the group has 'Restrict Saving Content' (noforwards)."
+                    "💡 Works even with 'Restrict Saving Content' (noforwards).\n"
+                    "📤 Sends as photo/video (not document)."
                 )
                 return
 
@@ -900,7 +886,6 @@ async def handle_bot_commands(event):
                 await event.reply("❌ **Invalid Group ID.**")
                 return
 
-            # Parse msg IDs — from args or from replied message
             msg_ids_raw = parts[2].strip() if len(parts) > 2 else ""
             if not msg_ids_raw and event.is_reply:
                 r = await event.get_reply_message()
@@ -911,15 +896,35 @@ async def handle_bot_commands(event):
                 await event.reply("⚠️ **No message IDs provided.**")
                 return
 
-            # Support both comma and newline separation
+            # Support comma, newline, AND ranges (e.g. 1301-1352, 100,200-205)
             msg_ids_raw = msg_ids_raw.replace("\n", ",")
             msg_ids = []
             for chunk in msg_ids_raw.split(","):
                 chunk = chunk.strip()
                 if not chunk:
                     continue
-                if chunk.isdigit():
+                if "-" in chunk:
+                    rng = chunk.split("-", 1)
+                    try:
+                        start = int(rng[0].strip())
+                        end = int(rng[1].strip())
+                        if start <= end:
+                            msg_ids.extend(range(start, end + 1))
+                        else:
+                            msg_ids.extend(range(end, start + 1))
+                    except ValueError:
+                        continue
+                elif chunk.isdigit():
                     msg_ids.append(int(chunk))
+
+            # Deduplicate while preserving order
+            seen = set()
+            unique_ids = []
+            for mid in msg_ids:
+                if mid not in seen:
+                    seen.add(mid)
+                    unique_ids.append(mid)
+            msg_ids = unique_ids
 
             if not msg_ids:
                 await event.reply("❌ **No valid message IDs found.**")
