@@ -46,9 +46,9 @@ DEFAULT_BLACKLIST = {
 IGNORED_SPAWN_CHATS = set()
 
 # ⏱️ Timing (only for /catch human-like delay)
-MIN_CATCH_DELAY_SEC = 3.0
-CATCH_JITTER_MIN = 0.9
-CATCH_JITTER_MAX = 3.0
+MIN_CATCH_DELAY_SEC = 1.4
+CATCH_JITTER_MIN = 0.3
+CATCH_JITTER_MAX = 1.0
 LIMIT_EXTEND_SEC = 3600
 
 IRAN_TZ = timezone(timedelta(hours=3, minutes=30))
