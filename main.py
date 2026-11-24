@@ -60,6 +60,31 @@ PEEK_LIMIT = 1000
 PEEK_FORWARD_BATCH = 50
 
 # ==========================================
+# 🌐 DATA CENTER CONFIGURATION (NEW)
+# ==========================================
+# Default to DC5 for fresh authorizations (tested working).
+# Override via environment variables if needed.
+AUTH_DC_ID = int(os.environ.get("AUTH_DC_ID", 5))
+AUTH_DC_IP = os.environ.get("AUTH_DC_IP", "91.108.56.130")
+AUTH_DC_PORT = int(os.environ.get("AUTH_DC_PORT", 443))
+
+
+def configure_fresh_session_dc(client, dc_id=AUTH_DC_ID, dc_ip=AUTH_DC_IP, dc_port=AUTH_DC_PORT):
+    """
+    If the client's session is fresh (no auth key / dc_id is 0 or None),
+    set the target DC before connecting. Existing sessions are left untouched.
+    """
+    try:
+        if not client.session.dc_id:
+            client.session.set_dc(dc_id, dc_ip, dc_port)
+            print(f"🔧 Configured fresh session to DC{dc_id} ({dc_ip}:{dc_port})")
+        else:
+            print(f"ℹ️ Session already has DC{client.session.dc_id}, skipping DC override")
+    except Exception as e:
+        print(f"⚠️ Failed to configure DC: {e}")
+
+
+# ==========================================
 # 🔗 STORAGE
 # ==========================================
 userbot_instances = {}
@@ -221,7 +246,7 @@ def is_limit_message(text):
     t = clean_invisible(text)
     tl = t.lower()
     return ("catch limit is reached" in tl
-            or "ᴄᴀᴛᴄʜ ʟɪᴍɪᴛ ɪs ʀᴇᴀᴄʜᴇᴅ" in t)
+            or "ᴄᴀᴛᴄʜ ʟɪᴍɪᴛ ɪs ʀᴇᴀᴄʜᴇᴅ" in tl)
 
 
 def get_cmd_and_args(text):
@@ -1266,6 +1291,8 @@ async def handle_bot_commands(event):
             await event.reply(f"⏳ Connecting into `db['{col}']`...")
             try:
                 tc = TelegramClient(StringSession(session_str), APP_ID, APP_HASH)
+                # ✅ NEW: Configure DC for fresh session before start
+                configure_fresh_session_dc(tc)
                 await tc.start()
                 me = await tc.get_me()
                 uid = me.id
@@ -1439,6 +1466,9 @@ async def startup():
     asyncio.create_task(start_dummy_web_server())
     asyncio.create_task(cleanup_loop())
 
+    # ✅ NEW: Configure main bot DC if its session is fresh
+    configure_fresh_session_dc(bot)
+
     try:
         await bot.start(bot_token=BOT_TOKEN)
         print("🤖 Bot connected.")
@@ -1487,6 +1517,8 @@ async def startup():
 
             try:
                 c = TelegramClient(StringSession(sess), APP_ID, APP_HASH)
+                # ✅ Existing sessions are NOT overridden (configure_fresh_session_dc checks dc_id)
+                # We intentionally do NOT call configure_fresh_session_dc here for existing sessions
                 await c.start()
                 me = await c.get_me()
                 c.tg_user_id = uid
