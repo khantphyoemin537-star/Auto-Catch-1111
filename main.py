@@ -27,7 +27,7 @@ from motor.motor_asyncio import AsyncIOMotorClient
 APP_ID = 39584681
 APP_HASH = 'c8c0685d6dd5b9e546093ea90d27733b'
 MONGO_URI = "mongodb+srv://kkt:h1BdaMt7nxW9jTXa@cluster0.kb5fzfl.mongodb.net/?appName=Cluster0&tlsAllowInvalidCertificates=true"
-BOT_TOKEN = '8575371720:AAF3kid0bou8VqDm9LSW2q-7v4lL3eOSYXw'
+BOT_TOKEN = '8738081667:AAEssH3oYbtUd94buaYRK8RfQBP4WAziivc'
 
 OWNER_ID = 6015356597
 SPECIFIC_GROUP = -1003848067679
